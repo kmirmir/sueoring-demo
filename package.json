@@ -6,16 +6,46 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "lint": "eslint . --ext .ts,.tsx",
+    "lint:fix": "eslint . --ext .ts,.tsx --fix",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md}\"",
+    "type-check": "tsc --noEmit",
+    "test": "echo \"Tests will be added in Phase 2\" && exit 0",
+    "clean": "rm -rf node_modules && npm install",
+    "prebuild": "npm run type-check && npm run lint"
   },
   "dependencies": {
+    "@react-native-async-storage/async-storage": "^3.0.2",
+    "@react-navigation/bottom-tabs": "^7.15.11",
+    "@react-navigation/native": "^7.2.2",
+    "@react-navigation/stack": "^7.8.11",
+    "@supabase/supabase-js": "^2.105.3",
+    "@tanstack/react-query": "^5.100.9",
+    "axios": "^1.16.0",
     "expo": "~54.0.33",
+    "expo-av": "^16.0.8",
+    "expo-camera": "^55.0.18",
     "expo-status-bar": "~3.0.9",
     "react": "19.1.0",
-    "react-native": "0.81.5"
+    "react-native": "0.81.5",
+    "react-native-dotenv": "^3.4.11",
+    "react-native-safe-area-context": "^5.7.0",
+    "react-native-screens": "^4.24.0",
+    "react-native-webrtc": "^124.0.7",
+    "socket.io-client": "^4.8.3",
+    "zustand": "^5.0.13"
   },
   "devDependencies": {
+    "@types/node": "^25.6.0",
     "@types/react": "~19.1.0",
+    "@typescript-eslint/eslint-plugin": "^8.59.2",
+    "@typescript-eslint/parser": "^8.59.2",
+    "eslint": "^10.3.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.5",
+    "prettier": "^3.8.3",
     "typescript": "~5.9.2"
   },
   "private": true
