@@ -1153,9 +1153,9 @@ export default function RealSignLanguageScreen() {
         </View>
 
         {/* 2개 화면 레이아웃 */}
-        <View style={[styles.screensContainer, isMobileWeb && { flexDirection: 'column' }]}>
+        <View style={[styles.screensContainer, { flexDirection: isMobileWeb ? 'column' : 'row' }]}>
           {/* 농인 화면 - 카메라 + 수어 인식 */}
-          <View style={[styles.screenBox, isMobileWeb && { minWidth: undefined }]}>
+          <View style={[styles.screenBox, !isMobileWeb && { minWidth: 500 }]}>
             <View style={styles.screenHeader}>
               <Text style={styles.screenTitle}>👤 농인 (수어 송신)</Text>
             </View>
@@ -1172,19 +1172,22 @@ export default function RealSignLanguageScreen() {
                     muted
                     style={{
                       position: 'absolute',
+                      top: 0,
+                      left: 0,
                       width: '100%',
                       height: '100%',
-                      objectFit: 'contain',
+                      objectFit: 'cover',
                     }}
                   />
                   <canvas
                     ref={canvasRef as any}
                     style={{
                       position: 'absolute',
+                      top: 0,
+                      left: 0,
                       width: '100%',
                       height: '100%',
-                      objectFit: 'contain',
-                      // 배경 투명 — MediaPipe가 그리기 전에는 아래 비디오가 보이도록
+                      objectFit: 'cover',
                     }}
                   />
                 </>
@@ -1348,7 +1351,7 @@ export default function RealSignLanguageScreen() {
           </View>
 
           {/* 청인 화면 - 자막 수신 */}
-          <View style={[styles.screenBox, isMobileWeb && { minWidth: undefined }]}>
+          <View style={[styles.screenBox, !isMobileWeb && { minWidth: 500 }]}>
             <View style={styles.screenHeader}>
               <Text style={styles.screenTitle}>👤 청인 (자막 수신)</Text>
             </View>
@@ -1518,7 +1521,6 @@ const styles = StyleSheet.create({
 
   // Screens
   screensContainer: {
-    flexDirection: Platform.OS === 'web' ? 'row' : 'column',
     padding: spacing.lg,
     gap: spacing.xl,
   },
@@ -1527,7 +1529,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#1A1F3A',
     borderRadius: 16,
     padding: spacing.lg,
-    minWidth: Platform.OS === 'web' ? 500 : undefined,
     borderWidth: 2,
     borderColor: colors.primary.dark,
   },
