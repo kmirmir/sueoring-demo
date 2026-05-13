@@ -5,7 +5,10 @@
   "installCommand": "npm install",
   "framework": null,
   "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
+    {
+      "source": "/((?!_expo/|favicon\\.ico|metadata\\.json|assets/).*)",
+      "destination": "/index.html"
+    }
   ],
   "headers": [
     {
