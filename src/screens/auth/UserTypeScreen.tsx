@@ -14,8 +14,12 @@ export default function UserTypeScreen({ onComplete }: UserTypeScreenProps) {
   const [selectedType, setSelectedType] = useState<UserType>(null);
 
   const handleComplete = () => {
+    console.log('handleComplete called, selectedType:', selectedType);
     if (selectedType) {
+      console.log('Calling onComplete with:', selectedType);
       onComplete(selectedType);
+    } else {
+      console.log('selectedType is null, button should be disabled');
     }
   };
 
@@ -37,7 +41,10 @@ export default function UserTypeScreen({ onComplete }: UserTypeScreenProps) {
           {/* 청각장애인 */}
           <TouchableOpacity
             style={[styles.card, selectedType === 'deaf' && styles.card_selected]}
-            onPress={() => setSelectedType('deaf')}
+            onPress={() => {
+              console.log('Deaf card clicked');
+              setSelectedType('deaf');
+            }}
             activeOpacity={0.7}
           >
             <View style={styles.cardHeader}>

@@ -231,7 +231,8 @@ const styles = StyleSheet.create({
   },
   timerContainer: {
     alignItems: 'center',
-    marginBottom: spacing.lg,
+    marginTop: spacing.md,
+    marginBottom: spacing.xl,
   },
   timerText: {
     fontSize: fonts.sizes.base,

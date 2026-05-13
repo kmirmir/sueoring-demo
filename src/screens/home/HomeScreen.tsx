@@ -1,9 +1,21 @@
 import React from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Dimensions } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { colors, fonts, spacing, typography } from '@/constants';
 
-export default function HomeScreen() {
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const isLargeScreen = SCREEN_WIDTH > 768;
+
+interface HomeScreenProps {
+  onTestIncomingCall?: () => void;
+  onTestOutgoingCall?: () => void;
+  onSignLanguageDemo?: () => void;
+  onRealSignLanguage?: () => void;
+  onGestureLearning?: () => void;
+  onSignDictionary?: () => void;
+}
+
+export default function HomeScreen({ onTestIncomingCall, onTestOutgoingCall, onSignLanguageDemo, onRealSignLanguage, onGestureLearning, onSignDictionary }: HomeScreenProps = {}) {
   return (
     <View style={styles.container}>
       <StatusBar style="auto" />
@@ -18,61 +30,69 @@ export default function HomeScreen() {
       <ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
         {/* Hero Section */}
         <View style={styles.heroSection}>
-          <Text style={styles.heroTitle}>통역사 없이,{'\n'}AI가 수화를 통역합니다</Text>
-          <Text style={styles.heroDescription}>
-            청각장애인과 청인이 실시간 영상통화로{'\n'}자유롭게 소통할 수 있습니다
-          </Text>
+          <Text style={styles.heroTitle}>통역사 없이,</Text>
+          <Text style={styles.heroTitle}>AI가 수화를 통역합니다</Text>
+          <View style={styles.heroDescriptionContainer}>
+            <Text style={styles.heroDescription}>
+              청각장애인과 청인이 실시간 영상통화로
+            </Text>
+            <Text style={styles.heroDescription}>
+              자유롭게 소통할 수 있습니다
+            </Text>
+          </View>
         </View>
 
         {/* Features */}
         <View style={styles.featuresSection}>
           <Text style={styles.sectionTitle}>핵심 기능</Text>
 
-          <View style={styles.featureCard}>
-            <View style={styles.featureIcon}>
-              <Text style={styles.featureEmoji}>🤟</Text>
+          <View style={[styles.featuresGrid, isLargeScreen && styles.featuresGridLarge]}>
+            <View style={[styles.featureCard, isLargeScreen && styles.featureCardLarge]}>
+              <View style={styles.featureIcon}>
+                <Text style={styles.featureEmoji}>🤟</Text>
+              </View>
+              <View style={styles.featureContent}>
+                <Text style={styles.featureTitle}>수화 → 자막 변환</Text>
+                <Text style={styles.featureDescription}>
+                  MediaPipe + KSL AI가 수화를 실시간으로 한국어 자막으로 변환
+                </Text>
+              </View>
             </View>
-            <View style={styles.featureContent}>
-              <Text style={styles.featureTitle}>수화 → 자막 변환</Text>
-              <Text style={styles.featureDescription}>
-                MediaPipe + KSL AI가 수화를{'\n'}실시간으로 한국어 자막으로 변환
-              </Text>
-            </View>
-          </View>
 
-          <View style={styles.featureCard}>
-            <View style={styles.featureIcon}>
-              <Text style={styles.featureEmoji}>🗣️</Text>
+            <View style={[styles.featureCard, isLargeScreen && styles.featureCardLarge]}>
+              <View style={styles.featureIcon}>
+                <Text style={styles.featureEmoji}>🗣️</Text>
+              </View>
+              <View style={styles.featureContent}>
+                <Text style={styles.featureTitle}>음성 → 수화 아바타</Text>
+                <Text style={styles.featureDescription}>
+                  청인의 목소리를 3D 아바타가 수화로 실시간 표현
+                </Text>
+              </View>
             </View>
-            <View style={styles.featureContent}>
-              <Text style={styles.featureTitle}>음성 → 수화 아바타</Text>
-              <Text style={styles.featureDescription}>
-                청인의 목소리를 3D 아바타가{'\n'}수화로 실시간 표현
-              </Text>
-            </View>
-          </View>
 
-          <View style={styles.featureCard}>
-            <View style={styles.featureIcon}>
-              <Text style={styles.featureEmoji}>📞</Text>
+            <View style={[styles.featureCard, isLargeScreen && styles.featureCardLarge]}>
+              <View style={styles.featureIcon}>
+                <Text style={styles.featureEmoji}>📞</Text>
+              </View>
+              <View style={styles.featureContent}>
+                <Text style={styles.featureTitle}>즉시 영상통화</Text>
+                <Text style={styles.featureDescription}>
+                  대기 없이 바로 연결되는 WebRTC 기반 P2P 통화
+                </Text>
+              </View>
             </View>
-            <View style={styles.featureContent}>
-              <Text style={styles.featureTitle}>즉시 영상통화</Text>
-              <Text style={styles.featureDescription}>
-                대기 없이 바로 연결되는{'\n'}WebRTC 기반 P2P 통화
-              </Text>
-            </View>
-          </View>
 
-          <View style={styles.featureCard}>
-            <View style={styles.featureIcon}>
-              <Text style={styles.featureEmoji}>🔒</Text>
-            </View>
-            <View style={styles.featureContent}>
-              <Text style={styles.featureTitle}>보안 & 프라이버시</Text>
-              <Text style={styles.featureDescription}>
-                E2E 암호화로 영상 데이터{'\n'}서버 미저장 원칙
-              </Text>
+            <View style={[styles.featureCard, isLargeScreen && styles.featureCardLarge]}>
+              <View style={styles.featureIcon}>
+                <Text style={styles.featureEmoji}>🔒</Text>
+              </View>
+              <View style={styles.featureContent}>
+                <Text style={styles.featureTitle}>보안 & 프라이버시</Text>
+                <Text style={styles.featureDescription}>
+                  E2E 암호화로 영상 데이터 서버 미저장 원칙
+                </Text>
+              </View>
             </View>
           </View>
         </View>
@@ -102,16 +122,72 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* CTA Buttons */}
-        <View style={styles.ctaSection}>
-          <TouchableOpacity style={styles.primaryButton}>
-            <Text style={styles.primaryButtonText}>앱 다운로드 (Coming Soon)</Text>
-          </TouchableOpacity>
+        {/* Learning Section */}
+        {(onGestureLearning || onSignDictionary) && (
+          <View style={styles.learningSection}>
+            <Text style={styles.sectionTitle}>📚 학습 도구</Text>
 
-          <TouchableOpacity style={styles.secondaryButton}>
-            <Text style={styles.secondaryButtonText}>데모 영상 보기</Text>
-          </TouchableOpacity>
-        </View>
+            {onGestureLearning && (
+              <TouchableOpacity style={styles.learningCard} onPress={onGestureLearning}>
+                <View style={styles.learningIcon}>
+                  <Text style={styles.learningEmoji}>🎓</Text>
+                </View>
+                <View style={styles.learningContent}>
+                  <Text style={styles.learningTitle}>제스처 학습 모드</Text>
+                  <Text style={styles.learningDescription}>
+                    수어 제스처를 단계별로 학습하세요
+                  </Text>
+                </View>
+                <Text style={styles.arrowIcon}>›</Text>
+              </TouchableOpacity>
+            )}
+
+            {onSignDictionary && (
+              <TouchableOpacity style={styles.learningCard} onPress={onSignDictionary}>
+                <View style={styles.learningIcon}>
+                  <Text style={styles.learningEmoji}>📖</Text>
+                </View>
+                <View style={styles.learningContent}>
+                  <Text style={styles.learningTitle}>수어 사전</Text>
+                  <Text style={styles.learningDescription}>
+                    전체 수어 제스처 목록과 검색
+                  </Text>
+                </View>
+                <Text style={styles.arrowIcon}>›</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+
+        {/* Demo Test Buttons */}
+        {(onTestIncomingCall || onTestOutgoingCall || onSignLanguageDemo || onRealSignLanguage) && (
+          <View style={styles.demoSection}>
+            <Text style={styles.demoTitle}>🎬 데모 테스트</Text>
+
+            {onRealSignLanguage && (
+              <TouchableOpacity style={[styles.demoButton, styles.demoButton_highlight]} onPress={onRealSignLanguage}>
+                <Text style={styles.demoButtonText}>🔴 실시간 수어 인식 (MediaPipe)</Text>
+              </TouchableOpacity>
+            )}
+
+            {onSignLanguageDemo && (
+              <TouchableOpacity style={[styles.demoButton, styles.demoButton_primary]} onPress={onSignLanguageDemo}>
+                <Text style={styles.demoButtonText}>🤟 수어 인식 시뮬레이션</Text>
+              </TouchableOpacity>
+            )}
+
+            {onTestIncomingCall && (
+              <TouchableOpacity style={styles.demoButton} onPress={onTestIncomingCall}>
+                <Text style={styles.demoButtonText}>📞 수신 통화 화면</Text>
+              </TouchableOpacity>
+            )}
+            {onTestOutgoingCall && (
+              <TouchableOpacity style={styles.demoButton} onPress={onTestOutgoingCall}>
+                <Text style={styles.demoButtonText}>📱 발신 통화 화면</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
 
         {/* Footer */}
         <View style={styles.footer}>
@@ -155,30 +231,50 @@ const styles = StyleSheet.create({
   },
   heroSection: {
     paddingHorizontal: spacing.lg,
-    paddingVertical: spacing['2xl'],
+    paddingVertical: spacing['3xl'],
     alignItems: 'center',
     backgroundColor: colors.background.paper,
   },
   heroTitle: {
-    ...typography.h2,
+    fontSize: fonts.sizes['3xl'],
+    fontWeight: fonts.weights.bold,
     color: colors.text.primary,
     textAlign: 'center',
-    marginBottom: spacing.md,
+    marginBottom: spacing.xs,
+    lineHeight: fonts.sizes['3xl'] * 1.3,
+  },
+  heroDescriptionContainer: {
+    marginTop: spacing.lg,
+    alignItems: 'center',
   },
   heroDescription: {
-    ...typography.body1,
+    fontSize: fonts.sizes.lg,
     color: colors.text.secondary,
     textAlign: 'center',
-    lineHeight: fonts.lineHeights.relaxed * fonts.sizes.base,
+    lineHeight: fonts.sizes.lg * 1.6,
+    marginBottom: spacing.xs,
   },
   featuresSection: {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.xl,
+    ...(isLargeScreen && {
+      maxWidth: 1200,
+      alignSelf: 'center',
+      width: '100%',
+    }),
   },
   sectionTitle: {
     ...typography.h3,
     color: colors.text.primary,
     marginBottom: spacing.lg,
+  },
+  featuresGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.md,
+  },
+  featuresGridLarge: {
+    gap: spacing.lg,
   },
   featureCard: {
     flexDirection: 'row',
@@ -188,6 +284,10 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
     borderWidth: 1,
     borderColor: colors.border.default,
+    width: '100%',
+  },
+  featureCardLarge: {
+    width: '48%',
   },
   featureIcon: {
     width: 56,
@@ -208,12 +308,12 @@ const styles = StyleSheet.create({
   featureTitle: {
     ...typography.h5,
     color: colors.text.primary,
-    marginBottom: spacing.xs,
+    marginBottom: spacing.sm,
   },
   featureDescription: {
     ...typography.body2,
     color: colors.text.secondary,
-    lineHeight: fonts.lineHeights.normal * fonts.sizes.sm,
+    lineHeight: fonts.sizes.sm * 1.6,
   },
   techSection: {
     paddingHorizontal: spacing.lg,
@@ -236,37 +336,6 @@ const styles = StyleSheet.create({
     fontWeight: fonts.weights.medium,
     color: colors.primary.contrast,
   },
-  ctaSection: {
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.xl,
-    gap: spacing.md,
-  },
-  primaryButton: {
-    backgroundColor: colors.primary.main,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.lg,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  primaryButtonText: {
-    ...typography.button,
-    color: colors.primary.contrast,
-    textTransform: 'none',
-  },
-  secondaryButton: {
-    backgroundColor: colors.background.elevated,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.lg,
-    borderRadius: 8,
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: colors.primary.main,
-  },
-  secondaryButtonText: {
-    ...typography.button,
-    color: colors.primary.main,
-    textTransform: 'none',
-  },
   footer: {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.xl,
@@ -280,5 +349,80 @@ const styles = StyleSheet.create({
   footerSubtext: {
     ...typography.caption,
     color: colors.text.disabled,
+  },
+  demoSection: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.xl,
+    backgroundColor: colors.warning.background,
+    borderRadius: 12,
+    marginHorizontal: spacing.lg,
+  },
+  demoTitle: {
+    ...typography.h4,
+    color: colors.text.primary,
+    marginBottom: spacing.md,
+    textAlign: 'center',
+  },
+  demoButton: {
+    backgroundColor: colors.secondary.main,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginBottom: spacing.sm,
+  },
+  demoButton_primary: {
+    backgroundColor: colors.primary.main,
+  },
+  demoButton_highlight: {
+    backgroundColor: colors.error.main,
+  },
+  demoButtonText: {
+    fontSize: fonts.sizes.base,
+    fontWeight: fonts.weights.semibold,
+    color: colors.primary.contrast,
+  },
+  learningSection: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.xl,
+  },
+  learningCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.background.elevated,
+    padding: spacing.lg,
+    borderRadius: 12,
+    marginBottom: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border.default,
+  },
+  learningIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: colors.primary.light + '20',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: spacing.md,
+  },
+  learningEmoji: {
+    fontSize: 28,
+  },
+  learningContent: {
+    flex: 1,
+  },
+  learningTitle: {
+    ...typography.h5,
+    color: colors.text.primary,
+    marginBottom: spacing.xs,
+  },
+  learningDescription: {
+    ...typography.body2,
+    color: colors.text.secondary,
+    lineHeight: fonts.lineHeights.normal * fonts.sizes.sm,
+  },
+  arrowIcon: {
+    fontSize: 32,
+    color: colors.gray[500],
   },
 });

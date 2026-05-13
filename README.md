@@ -57,9 +57,17 @@ npm run android
 # iOS 시뮬레이터에서 실행 (macOS만 가능)
 npm run ios
 
-# 웹 브라우저에서 실행
+# 웹 브라우저에서 실행 (자동으로 브라우저 열림)
+npm run web:dev
+
+# 또는 서버만 시작
 npm run web
 ```
+
+**💡 브라우저가 자동으로 열리지 않을 때:**
+- `quick-open.html` 파일을 더블클릭하거나
+- `npm run web:open` 명령을 실행하세요
+- 자세한 내용은 [WEB_BROWSER_GUIDE.md](WEB_BROWSER_GUIDE.md)를 참조하세요
 
 ## 📁 프로젝트 구조
 
@@ -88,6 +96,15 @@ SueoRing/
 ```bash
 # 개발 서버 시작
 npm start
+
+# 웹 서버 시작 + 브라우저 자동 열기 (추천)
+npm run web:dev
+
+# 웹 서버만 시작
+npm run web
+
+# 실행 중인 웹 서버에 브라우저 열기
+npm run web:open
 
 # 코드 린트 검사
 npm run lint
@@ -161,10 +178,12 @@ import type { User } from '@/types';
 - **AWS**: 인프라 호스팅
 
 ### AI/ML
-- **MediaPipe**: 수화 키포인트 추출
-- **KSL 인식 모델**: 한국수어 인식
-- **Clova Speech**: 음성 인식 (STT)
-- **EQ4ALL API**: 수화 아바타 생성
+- **MediaPipe Hands**: 실시간 손 랜드마크 추출 (21 포인트)
+- **패턴 기반 제스처 인식**: 6가지 기본 수어 (안녕하세요, 감사합니다, 네, 아니요, 괜찮아요, 도와주세요)
+- **Web Speech API**: 브라우저 네이티브 TTS (한국어)
+- **KSL 인식 모델** (계획): 한국수어 사전 통합
+- **Clova Speech** (계획): 음성 인식 (STT)
+- **EQ4ALL API** (계획): 수화 아바타 생성
 
 ### DevOps
 - **Git**: 버전 관리
@@ -173,9 +192,14 @@ import type { User } from '@/types';
 
 ## 📱 지원 플랫폼
 
-- ✅ Android 12 이상
-- ✅ iOS 15 이상
-- 🔄 Web (Post-MVP)
+- ✅ **Web** (Chrome, Edge, Safari) - 현재 개발 중
+- 🔄 Android 12 이상 (Post-MVP)
+- 🔄 iOS 15 이상 (Post-MVP)
+
+**현재 웹 데모 버전이 실행 가능합니다!**
+- 실시간 수어 인식 (카메라 필요)
+- 자막 + TTS 음성 출력
+- 큐 기반 순차 처리
 
 ## 🔐 보안
 
@@ -188,10 +212,14 @@ import type { User } from '@/types';
 
 ### MVP (0-6개월)
 - [x] 프로젝트 초기 셋업
-- [ ] 인증 UI 구현
-- [ ] WebRTC 영상통화
-- [ ] 수화 → 자막 AI
-- [ ] 음성 → 아바타 AI
+- [x] 기본 UI/UX 구현 (홈, 인증 플로우)
+- [x] MediaPipe 수어 인식 데모 (6가지 제스처)
+- [x] 실시간 자막 + TTS 음성 출력
+- [x] 큐 기반 순차 처리 시스템
+- [x] 긴급(119) 수어 예시 추가
+- [ ] WebRTC 영상통화 구현
+- [ ] 수어 제스처 확장 (20개 이상)
+- [ ] 음성 → 수어 아바타 AI
 - [ ] 베타 테스트
 - [ ] 정식 출시
 
