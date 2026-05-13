@@ -802,14 +802,14 @@ export default function RealSignLanguageScreen() {
     try {
       console.log('🎥 Starting camera...');
 
-      // ideal만 지정해 OverconstrainedError 방지 — 실패 시 기본 video로 폴백
+      // 모바일: landscape 제약 금지 — 브라우저가 portrait raw 프레임을 MediaPipe에 전달하도록 제약 최소화
+      // 데스크탑: HD(1280×720) ideal 지정
+      const videoConstraints = isMobileWeb
+        ? { facingMode: 'user' }
+        : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: 'user' };
+
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { ideal: 30 },
-          facingMode: 'user',
-        },
+        video: videoConstraints,
         audio: false,
       }).catch(async (constraintErr: DOMException) => {
         if (constraintErr.name === 'OverconstrainedError' || constraintErr.name === 'ConstraintNotSatisfiedError') {
@@ -831,9 +831,9 @@ export default function RealSignLanguageScreen() {
           video.onloadedmetadata = () => {
             console.log(`📹 Video metadata loaded: ${video.videoWidth}x${video.videoHeight}`);
 
-            // 캔버스 크기를 비디오 실제 크기에 맞춤
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
+            // 캔버스 크기를 비디오 실제 크기에 맞춤 (0 방어: 최소 640×480)
+            canvas.width = video.videoWidth > 0 ? video.videoWidth : 640;
+            canvas.height = video.videoHeight > 0 ? video.videoHeight : 480;
             console.log(`🎨 Canvas size set: ${canvas.width}x${canvas.height}`);
 
             resolve();
@@ -867,12 +867,15 @@ export default function RealSignLanguageScreen() {
           }
         });
 
-        console.log('⚙️ Setting Hands options (Full model)...');
+        // 모바일: Lite 모델(0) + 낮은 임계값으로 검출률 향상 / 데스크탑: Full 모델(1)
+        const modelComplexity = isMobileWeb ? 0 : 1;
+        const detectionConf = isMobileWeb ? 0.5 : 0.6;
+        console.log(`⚙️ Setting Hands options (complexity=${modelComplexity}, conf=${detectionConf})...`);
         hands.setOptions({
           maxNumHands: 2,
-          modelComplexity: 1,  // 1=Full 모델 (더 정확)
-          minDetectionConfidence: 0.6,
-          minTrackingConfidence: 0.6
+          modelComplexity,
+          minDetectionConfidence: detectionConf,
+          minTrackingConfidence: detectionConf,
         });
 
         hands.onResults(onResults);
@@ -925,8 +928,9 @@ export default function RealSignLanguageScreen() {
               // Hands 처리
               await handsRef.current.send({ image: videoRef.current });
 
-              // MoveNet 포즈 감지 (매 프레임마다는 부담이 크므로 3프레임마다 실행)
-              if (frameProcessCount % 3 === 0) {
+              // MoveNet 포즈 감지 — 모바일: 15프레임마다(GPU 여유), 데스크탑: 3프레임마다
+              const moveNetInterval = isMobileWeb ? 15 : 3;
+              if (frameProcessCount % moveNetInterval === 0) {
                 try {
                   const poses = await poseDetectorRef.current.estimatePoses(videoRef.current);
 
