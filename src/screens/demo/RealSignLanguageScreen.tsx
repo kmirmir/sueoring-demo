@@ -65,6 +65,7 @@ export default function RealSignLanguageScreen() {
   const slotMissedFramesRef = useRef<[number, number]>([0, 0]);
 
   const [isCameraActive, setIsCameraActive] = useState(false);
+  const [cameraError, setCameraError] = useState<{ type: string } | null>(null);
   const [subtitleHistory, setSubtitleHistory] = useState<Array<{text: string, timestamp: number}>>([]);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [handDetected, setHandDetected] = useState(false);
@@ -793,19 +794,25 @@ export default function RealSignLanguageScreen() {
       return;
     }
 
+    setCameraError(null);
+
     try {
       console.log('🎥 Starting camera...');
 
-      // 카메라 스트림 가져오기 (HD 우선 — getUserMedia 응답시간 단축)
+      // ideal만 지정해 OverconstrainedError 방지 — 실패 시 기본 video로 폴백
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          width: { ideal: 1280, min: 640 },   // HD 권장 (FullHD 대비 200~500ms 빠름)
-          height: { ideal: 720, min: 480 },
-          frameRate: { ideal: 30, min: 24 },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 30 },
           facingMode: 'user',
-          aspectRatio: 16/9
         },
-        audio: false  // 불필요한 오디오 비활성화로 성능 향상
+        audio: false,
+      }).catch(async (constraintErr: DOMException) => {
+        if (constraintErr.name === 'OverconstrainedError' || constraintErr.name === 'ConstraintNotSatisfiedError') {
+          return navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        }
+        throw constraintErr;
       });
 
       console.log('✅ Camera stream obtained');
@@ -972,8 +979,17 @@ export default function RealSignLanguageScreen() {
       console.log('🎉 AI 모델 로드 완료!');
 
     } catch (error) {
-      console.error('❌ Camera error:', error);
-      alert('카메라 접근 권한이 필요합니다.\n\n오류: ' + (error as Error).message);
+      const err = error as DOMException;
+      console.error('❌ Camera error:', err.name, err.message);
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setCameraError({ type: 'permission' });
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        setCameraError({ type: 'notfound' });
+      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+        setCameraError({ type: 'inuse' });
+      } else {
+        setCameraError({ type: 'unknown' });
+      }
     }
   };
 
@@ -1173,8 +1189,34 @@ export default function RealSignLanguageScreen() {
 
               {!isCameraActive && (
                 <View style={styles.placeholderOverlay}>
-                  <Text style={styles.placeholderEmoji}>📷</Text>
-                  <Text style={styles.placeholderText}>카메라를 시작하세요</Text>
+                  {cameraError ? (
+                    <>
+                      <Text style={styles.placeholderEmoji}>
+                        {cameraError.type === 'permission' ? '🚫' : '⚠️'}
+                      </Text>
+                      <Text style={styles.errorTitle}>
+                        {cameraError.type === 'permission' && '카메라 권한이 차단됨'}
+                        {cameraError.type === 'notfound' && '카메라를 찾을 수 없음'}
+                        {cameraError.type === 'inuse' && '카메라가 사용 중'}
+                        {cameraError.type === 'unknown' && '카메라 오류 발생'}
+                      </Text>
+                      <Text style={styles.errorMessage}>
+                        {cameraError.type === 'permission' &&
+                          '브라우저 주소창의 카메라 아이콘(🎥)을 클릭하거나\n설정 › 개인정보 › 카메라에서 이 사이트를 허용해 주세요.'}
+                        {cameraError.type === 'notfound' &&
+                          '카메라 장치를 찾을 수 없습니다.\n카메라가 올바르게 연결되어 있는지 확인해 주세요.'}
+                        {cameraError.type === 'inuse' &&
+                          '카메라가 다른 앱에서 사용 중입니다.\n다른 앱을 종료한 뒤 아래 버튼을 눌러 주세요.'}
+                        {cameraError.type === 'unknown' &&
+                          '카메라를 시작하는 중 오류가 발생했습니다.\n페이지를 새로고침하거나 다시 시도해 주세요.'}
+                      </Text>
+                    </>
+                  ) : (
+                    <>
+                      <Text style={styles.placeholderEmoji}>📷</Text>
+                      <Text style={styles.placeholderText}>카메라를 시작하세요</Text>
+                    </>
+                  )}
                 </View>
               )}
 
@@ -1523,6 +1565,20 @@ const styles = StyleSheet.create({
     fontSize: fonts.sizes.xl,
     color: '#FFFFFF',
     fontWeight: fonts.weights.semibold,
+  },
+  errorTitle: {
+    fontSize: fonts.sizes.xl,
+    color: '#FF6B6B',
+    fontWeight: fonts.weights.bold,
+    marginBottom: spacing.md,
+    textAlign: 'center',
+  },
+  errorMessage: {
+    fontSize: fonts.sizes.base,
+    color: '#CCCCCC',
+    textAlign: 'center',
+    lineHeight: 22,
+    paddingHorizontal: spacing.xl,
   },
   gestureOverlay: {
     position: 'absolute',
