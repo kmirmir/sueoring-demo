@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Platform } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Platform, useWindowDimensions } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { colors, fonts, spacing } from '@/constants';
 
@@ -50,6 +50,9 @@ const SHAKE_DIRECTION_DELTA_MIN = 0.003;// 방향전환 카운트 시 무시할 
 const MAX_MISSED_FRAMES_BEFORE_CLEAR = 5; // 손이 N프레임 연속 안 보일 때만 히스토리 비움
 
 export default function RealSignLanguageScreen() {
+  const { width: screenWidth } = useWindowDimensions();
+  const isMobileWeb = Platform.OS === 'web' && screenWidth < 768;
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const handsRef = useRef<any>(null);
@@ -1098,7 +1101,7 @@ export default function RealSignLanguageScreen() {
 
       <ScrollView style={styles.content}>
         {/* 상태 정보 */}
-        <View style={styles.statusBar}>
+        <View style={[styles.statusBar, isMobileWeb && styles.statusBarMobile]}>
           <View style={styles.statusItem}>
             <Text style={styles.statusLabel}>카메라</Text>
             <Text style={[styles.statusValue, isCameraActive && styles.statusValue_active]}>
@@ -1150,9 +1153,9 @@ export default function RealSignLanguageScreen() {
         </View>
 
         {/* 2개 화면 레이아웃 */}
-        <View style={styles.screensContainer}>
+        <View style={[styles.screensContainer, isMobileWeb && { flexDirection: 'column' }]}>
           {/* 농인 화면 - 카메라 + 수어 인식 */}
-          <View style={styles.screenBox}>
+          <View style={[styles.screenBox, isMobileWeb && { minWidth: undefined }]}>
             <View style={styles.screenHeader}>
               <Text style={styles.screenTitle}>👤 농인 (수어 송신)</Text>
             </View>
@@ -1345,7 +1348,7 @@ export default function RealSignLanguageScreen() {
           </View>
 
           {/* 청인 화면 - 자막 수신 */}
-          <View style={styles.screenBox}>
+          <View style={[styles.screenBox, isMobileWeb && { minWidth: undefined }]}>
             <View style={styles.screenHeader}>
               <Text style={styles.screenTitle}>👤 청인 (자막 수신)</Text>
             </View>
@@ -1474,6 +1477,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-around',
     borderWidth: 2,
     borderColor: colors.primary.main,
+  },
+  statusBarMobile: {
+    flexWrap: 'wrap',
+    rowGap: spacing.sm,
   },
   statusItem: {
     alignItems: 'center',
