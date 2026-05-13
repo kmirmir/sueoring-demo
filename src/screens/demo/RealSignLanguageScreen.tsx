@@ -434,8 +434,21 @@ export default function RealSignLanguageScreen() {
     ctx.save();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // 비디오 그리기
-    ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+    // 비디오 원본 해상도
+    const videoW = (results.image as HTMLVideoElement).videoWidth || canvas.width;
+    const videoH = (results.image as HTMLVideoElement).videoHeight || canvas.height;
+    // CSS objectFit:cover 와 동일한 변환 — 비디오를 canvas에 꽉 채워 그림
+    const coverScale = Math.max(canvas.width / videoW, canvas.height / videoH);
+    const imgX = (canvas.width - videoW * coverScale) / 2;
+    const imgY = (canvas.height - videoH * coverScale) / 2;
+    // 정규화 좌표(0-1) → canvas 픽셀 좌표 변환 헬퍼
+    const toCanvasPx = (nx: number, ny: number) => ({
+      x: nx * videoW * coverScale + imgX,
+      y: ny * videoH * coverScale + imgY,
+    });
+
+    // 비디오 그리기 (cover 변환 적용)
+    ctx.drawImage(results.image, imgX, imgY, videoW * coverScale, videoH * coverScale);
 
     // 감지 품질 평가
     let qualityScore = 0;
@@ -471,20 +484,15 @@ export default function RealSignLanguageScreen() {
 
       // MoveNet keypoints 그리기
       poseResultsRef.current.forEach((keypoint: any) => {
-        if (keypoint.score && keypoint.score > 0.3) {  // 신뢰도 0.3 이상만 그리기
+        if (keypoint.score && keypoint.score > 0.3) {
           const x = keypoint.x;
           const y = keypoint.y;
-
-          // 바운딩 박스 범위 업데이트
           minX = Math.min(minX, x);
           minY = Math.min(minY, y);
           maxX = Math.max(maxX, x);
           maxY = Math.max(maxY, y);
           validKeypoints++;
-
-          // 키포인트 원 그리기
-          const px = x * canvas.width;
-          const py = y * canvas.height;
+          const { x: px, y: py } = toCanvasPx(x, y);
           ctx.beginPath();
           ctx.arc(px, py, 5, 0, 2 * Math.PI);
           ctx.fillStyle = '#00FF88';
@@ -495,66 +503,45 @@ export default function RealSignLanguageScreen() {
         }
       });
 
-      // 연결선 그리기 (주요 연결만)
+      // 연결선 그리기
       const connections = [
-        [5, 6], [5, 7], [7, 9], [6, 8], [8, 10],  // 상체
-        [5, 11], [6, 12], [11, 12],  // 몸통
-        [11, 13], [13, 15], [12, 14], [14, 16]  // 하체
+        [5, 6], [5, 7], [7, 9], [6, 8], [8, 10],
+        [5, 11], [6, 12], [11, 12],
+        [11, 13], [13, 15], [12, 14], [14, 16]
       ];
-
       ctx.strokeStyle = '#0088FF';
       ctx.lineWidth = 2;
       connections.forEach(([i, j]) => {
         const kp1 = poseResultsRef.current[i];
         const kp2 = poseResultsRef.current[j];
         if (kp1 && kp2 && kp1.score > 0.3 && kp2.score > 0.3) {
+          const p1 = toCanvasPx(kp1.x, kp1.y);
+          const p2 = toCanvasPx(kp2.x, kp2.y);
           ctx.beginPath();
-          ctx.moveTo(kp1.x * canvas.width, kp1.y * canvas.height);
-          ctx.lineTo(kp2.x * canvas.width, kp2.y * canvas.height);
+          ctx.moveTo(p1.x, p1.y);
+          ctx.lineTo(p2.x, p2.y);
           ctx.stroke();
         }
       });
 
-      // 몸 감지 바운딩 박스 그리기 (파란색)
-      if (validKeypoints > 5) {  // 최소 5개 이상의 키포인트가 감지되면
-        const padding = 0.05;  // 5% 여유 공간
-        const boxMinX = Math.max(0, minX - padding);
-        const boxMinY = Math.max(0, minY - padding);
-        const boxMaxX = Math.min(1, maxX + padding);
-        const boxMaxY = Math.min(1, maxY + padding);
-
-        const boxX = boxMinX * canvas.width;
-        const boxY = boxMinY * canvas.height;
-        const boxWidth = (boxMaxX - boxMinX) * canvas.width;
-        const boxHeight = (boxMaxY - boxMinY) * canvas.height;
-
-        // 디버깅: 바운딩 박스 그리기 확인
-        if (Math.random() < 0.01) {
-          console.log('🔵 Drawing body bounding box:', {
-            validKeypoints,
-            boxX: boxX.toFixed(0),
-            boxY: boxY.toFixed(0),
-            boxWidth: boxWidth.toFixed(0),
-            boxHeight: boxHeight.toFixed(0)
-          });
-        }
-
-        // 파란색 바운딩 박스 (몸)
+      // 몸 감지 바운딩 박스
+      if (validKeypoints > 5) {
+        const padding = 0.05;
+        const bMinX = Math.max(0, minX - padding);
+        const bMinY = Math.max(0, minY - padding);
+        const bMaxX = Math.min(1, maxX + padding);
+        const bMaxY = Math.min(1, maxY + padding);
+        const { x: boxX, y: boxY } = toCanvasPx(bMinX, bMinY);
+        const boxWidth = (bMaxX - bMinX) * videoW * coverScale;
+        const boxHeight = (bMaxY - bMinY) * videoH * coverScale;
         ctx.strokeStyle = '#0088FF';
         ctx.lineWidth = 3;
         ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
-
-        // 라벨 표시
         ctx.fillStyle = 'rgba(0, 136, 255, 0.8)';
         ctx.fillRect(boxX, boxY - 35, 100, 30);
         ctx.fillStyle = '#FFFFFF';
         ctx.font = 'bold 16px Arial';
         ctx.fillText('몸 감지', boxX + 10, boxY - 12);
-      } else {
-        // 디버깅: validKeypoints가 부족한 경우
-        if (Math.random() < 0.01 && validKeypoints > 0) {
-          console.log('⚠️ Not enough valid keypoints for body box:', validKeypoints);
-        }
       }
     }
 
@@ -604,10 +591,9 @@ export default function RealSignLanguageScreen() {
           maxY = Math.max(maxY, lm.y);
         });
       });
-      const boxX = minX * canvas.width;
-      const boxY = minY * canvas.height;
-      const boxWidth = (maxX - minX) * canvas.width;
-      const boxHeight = (maxY - minY) * canvas.height;
+      const { x: boxX, y: boxY } = toCanvasPx(minX, minY);
+      const boxWidth = (maxX - minX) * videoW * coverScale;
+      const boxHeight = (maxY - minY) * videoH * coverScale;
       ctx.strokeStyle = color;
       ctx.lineWidth = 4;
       ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
@@ -694,17 +680,22 @@ export default function RealSignLanguageScreen() {
         // 이 손의 handedness 슬롯 찾기 (Left=0, Right=1) — 모션 검사 정합성
         const handLabel = results.multiHandedness?.[handIdx]?.label;
         const handSlotIdx = handLabel === 'Right' ? 1 : 0;
-        // 손 연결선 그리기
+        // drawConnectors/drawLandmarks는 정규화 좌표×canvas크기로 그림
+        // cover 변환 후 canvas 기준으로 재정규화
+        const scaledLandmarks = landmarks.map((lm: any) => {
+          const { x, y } = toCanvasPx(lm.x, lm.y);
+          return { ...lm, x: x / canvas.width, y: y / canvas.height };
+        });
+
         if (window.drawConnectors && window.HAND_CONNECTIONS) {
-          window.drawConnectors(ctx, landmarks, window.HAND_CONNECTIONS, {
+          window.drawConnectors(ctx, scaledLandmarks, window.HAND_CONNECTIONS, {
             color: '#00FF00',
             lineWidth: 5
           });
         }
 
-        // 손 랜드마크 그리기
         if (window.drawLandmarks) {
-          window.drawLandmarks(ctx, landmarks, {
+          window.drawLandmarks(ctx, scaledLandmarks, {
             color: '#FF0000',
             lineWidth: 2,
             radius: 5
@@ -720,11 +711,9 @@ export default function RealSignLanguageScreen() {
           maxY = Math.max(maxY, landmark.y);
         });
 
-        // 바운딩 박스 그리기
-        const boxX = minX * canvas.width;
-        const boxY = minY * canvas.height;
-        const boxWidth = (maxX - minX) * canvas.width;
-        const boxHeight = (maxY - minY) * canvas.height;
+        const { x: boxX, y: boxY } = toCanvasPx(minX, minY);
+        const boxWidth = (maxX - minX) * videoW * coverScale;
+        const boxHeight = (maxY - minY) * videoH * coverScale;
 
         ctx.strokeStyle = '#00FF00';
         ctx.lineWidth = 3;
@@ -739,11 +728,12 @@ export default function RealSignLanguageScreen() {
 
         // 제스처 텍스트 표시
         if (recognizedGesture) {
+          const labelW = Math.max(boxWidth, 120);
           ctx.fillStyle = 'rgba(0, 255, 0, 0.8)';
-          ctx.fillRect(boxX, boxY - 40, boxWidth, 35);
+          ctx.fillRect(boxX, boxY - 36, labelW, 32);
           ctx.fillStyle = '#000000';
-          ctx.font = 'bold 20px Arial';
-          ctx.fillText(recognizedGesture, boxX + 10, boxY - 15);
+          ctx.font = 'bold 18px Arial';
+          ctx.fillText(recognizedGesture, boxX + 8, boxY - 12);
         }
       }
     } else if (!recognizedGesture) {
@@ -831,9 +821,11 @@ export default function RealSignLanguageScreen() {
           video.onloadedmetadata = () => {
             console.log(`📹 Video metadata loaded: ${video.videoWidth}x${video.videoHeight}`);
 
-            // 캔버스 크기를 비디오 실제 크기에 맞춤 (0 방어: 최소 640×480)
-            canvas.width = video.videoWidth > 0 ? video.videoWidth : 640;
-            canvas.height = video.videoHeight > 0 ? video.videoHeight : 480;
+            // canvas를 표시 컨테이너 크기로 설정 — 좌표 매핑은 cover transform으로 처리
+            const displayW = canvasRef.current?.clientWidth;
+            const displayH = canvasRef.current?.clientHeight;
+            canvas.width = (displayW && displayW > 0) ? displayW : 360;
+            canvas.height = (displayH && displayH > 0) ? displayH : 450;
             console.log(`🎨 Canvas size set: ${canvas.width}x${canvas.height}`);
 
             resolve();
@@ -1191,7 +1183,6 @@ export default function RealSignLanguageScreen() {
                       left: 0,
                       width: '100%',
                       height: '100%',
-                      objectFit: 'cover',
                     }}
                   />
                 </>
