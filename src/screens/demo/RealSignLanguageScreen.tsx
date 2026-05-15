@@ -1,6 +1,22 @@
 /**
- * RealSignLanguageScreen - 실제 수어 인식 화면
- * MediaPipe Hands + TensorFlow.js MoveNet을 사용한 실시간 수어 인식 + 바운딩 박스 + 자막 + TTS
+ * RealSignLanguageScreen - 실시간 수어 인식 화면
+ *
+ * [손 제스처] MediaPipe Hands — 21개 랜드마크 기반
+ *   - 정적(11종): 안녕하세요·감사합니다·네·아니요·괜찮아요·도와주세요·경찰·119·전화·아파요·병원
+ *   - 모션(2종): 구급차(흔들기)·급해요(양손 흔들기)
+ *   - 손 크기 기반 동적 임계값으로 모바일/PC 자동 적응
+ *
+ * [몸 포즈] TensorFlow.js MoveNet Lightning — 17개 키포인트 기반
+ *   - 7종 긴급 포즈: 쓰러졌어요·기절위기·위험·SOS·도움요청·두통·가슴통증
+ *   - MoveNet 좌표 정규화(픽셀→0~1) 적용으로 MediaPipe 좌표 혼용 버그 수정
+ *   - 포즈 감지 시 바운딩 박스 + 이모지 라벨 표시
+ *
+ * [모바일 최적화]
+ *   - User-Agent + 터치포인트 기반 모바일 감지
+ *   - portrait 모드 임계값 분기 + 카메라 해상도 제한(640×480)
+ *   - WebGL → CPU 자동 폴백, Canvas 초기화 타이밍 보완
+ *
+ * [공통] 제스처 안정화 필터(5프레임) · 긴급 우선순위 큐 · CDN 폴백 · TTS
  */
 
 import React, { useState, useRef, useEffect } from 'react';
@@ -51,7 +67,17 @@ const MAX_MISSED_FRAMES_BEFORE_CLEAR = 5; // 손이 N프레임 연속 안 보일
 
 export default function RealSignLanguageScreen() {
   const { width: screenWidth } = useWindowDimensions();
-  const isMobileWeb = Platform.OS === 'web' && screenWidth < 768;
+
+  // User-Agent + 터치 + 화면 너비 조합으로 모바일 판별 (width 단독보다 정확)
+  const isMobileWeb = Platform.OS === 'web' && (
+    /Android|iPhone|iPad|iPod/i.test(
+      typeof navigator !== 'undefined' ? navigator.userAgent : ''
+    ) ||
+    (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0 && screenWidth < 1024)
+  );
+
+  // 카메라 로드 후 portrait 여부를 저장 (세로 촬영 여부로 임계값 동적 조정)
+  const isPortraitRef = useRef<boolean>(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -309,21 +335,37 @@ export default function RealSignLanguageScreen() {
       const ringMcp = landmarks[13];
       const pinkyMcp = landmarks[17];
 
-      // 손가락 펴짐 여부 (재사용)
-      const indexExtended = indexTip.y < indexMcp.y - 0.03;
-      const middleExtended = middleTip.y < middleMcp.y - 0.03;
-      const ringExtended = ringTip.y < ringMcp.y - 0.03;
-      const pinkyExtended = pinkyTip.y < pinkyMcp.y - 0.03;
+      // 손 크기(손목~중지MCP 거리) 기반 동적 임계값
+      // → 모바일(카메라 근거리)과 PC(원거리) 모두 손 비율에 맞게 자동 조정
+      const handSize = Math.abs(wrist.y - middleMcp.y);
+      const fingerThreshold = Math.max(handSize * 0.3, 0.02); // 손 크기의 30%, 최소 0.02
+
+      // 손가락 펴짐 여부 (동적 임계값 적용)
+      const indexExtended = indexTip.y < indexMcp.y - fingerThreshold;
+      const middleExtended = middleTip.y < middleMcp.y - fingerThreshold;
+      const ringExtended = ringTip.y < ringMcp.y - fingerThreshold;
+      const pinkyExtended = pinkyTip.y < pinkyMcp.y - fingerThreshold;
       const indexClosed = indexTip.y > indexMcp.y;
       const middleClosed = middleTip.y > middleMcp.y;
       const ringClosed = ringTip.y > ringMcp.y;
       const pinkyClosed = pinkyTip.y > pinkyMcp.y;
-      // 엄지는 옆으로 펴짐 — 손목 대비 x 거리로 판단
-      const thumbExtendedSideways = Math.abs(thumbTip.x - indexMcp.x) > 0.12;
+      // 엄지는 옆으로 펴짐 — 손목 대비 x 거리 (손 크기 기반 동적 임계값)
+      const thumbExtendedSideways = Math.abs(thumbTip.x - indexMcp.x) > Math.max(handSize * 0.8, 0.10);
 
       // 손의 높이 (y 좌표가 작을수록 위쪽)
       const handHeight = wrist.y;
-      const handAtFace = handHeight < 0.35;  // 얼굴/이마 높이
+
+      // portrait(모바일 세로) 여부에 따른 높이 임계값 조정
+      // portrait: 세로 프레임이라 얼굴이 위 30% 구간, 손이 더 낮게 잡힘
+      const isPortrait = isPortraitRef.current;
+      const faceThreshold = isPortrait ? 0.42 : 0.35;       // 얼굴/이마 높이
+      const helloThreshold = isPortrait ? 0.50 : 0.40;      // 안녕하세요 손 높이
+      const midMin = isPortrait ? 0.42 : 0.35;              // 중간 높이 하한
+      const midMax = isPortrait ? 0.82 : 0.70;              // 중간 높이 상한
+      const ambulanceMin = isPortrait ? 0.45 : 0.40;        // 구급차 높이 하한
+      const ambulanceMax = isPortrait ? 0.82 : 0.70;        // 구급차 높이 상한
+
+      const handAtFace = handHeight < faceThreshold;
 
       // ========= 긴급 수어 (구체적 패턴 우선) =========
 
@@ -352,15 +394,14 @@ export default function RealSignLanguageScreen() {
       const allFingersExtended = indexExtended && middleExtended && ringExtended && pinkyExtended;
 
       // [긴급] 구급차 - 손바닥(모두 펴기) + 흔들기 + 중간 높이
-      // 높이 범위를 0.4~0.7로 한정해 "안녕하세요"(높음)와 충돌 회피
-      if (allFingersExtended && isShaking && handHeight > 0.4 && handHeight < 0.7) {
+      if (allFingersExtended && isShaking && handHeight > ambulanceMin && handHeight < ambulanceMax) {
         return '구급차';
       }
 
       // ========= 기본 수어 =========
 
       // 안녕하세요 - 손을 위쪽에 + 모든 손가락 펴기 (정적 또는 흔들기 모두 허용)
-      if (handHeight < 0.4 && allFingersExtended) {
+      if (handHeight < helloThreshold && allFingersExtended) {
         return '안녕하세요';
       }
 
@@ -370,7 +411,7 @@ export default function RealSignLanguageScreen() {
       }
 
       // 네 - 검지만 펴기 (중간 높이)
-      if (indexTip.y < indexMcp.y - 0.1 && middleClosed && ringClosed && pinkyClosed) {
+      if (indexTip.y < indexMcp.y - fingerThreshold * 2 && middleClosed && ringClosed && pinkyClosed) {
         return '네';
       }
 
@@ -379,8 +420,8 @@ export default function RealSignLanguageScreen() {
         return '아니요';
       }
 
-      // 괜찮아요 - 엄지만 위로
-      const thumbIsUp = thumbTip.y < wrist.y - 0.1;
+      // 괜찮아요 - 엄지만 위로 (손 크기 기반 동적 임계값)
+      const thumbIsUp = thumbTip.y < wrist.y - Math.max(handSize * 0.8, 0.08);
       if (thumbIsUp && indexClosed && middleClosed) {
         return '괜찮아요';
       }
@@ -388,7 +429,7 @@ export default function RealSignLanguageScreen() {
       // 도와주세요 - 손바닥 보이기 (중간 높이에서 모든 손가락 펴기)
       if (
         indexExtended && middleExtended && ringExtended && pinkyExtended &&
-        handHeight > 0.35 && handHeight < 0.7
+        handHeight > midMin && handHeight < midMax
       ) {
         return '도와주세요';
       }
@@ -470,80 +511,9 @@ export default function RealSignLanguageScreen() {
       setDetectionQuality('none');
     }
 
-    // MoveNet Pose 그리기 (몸 스켈레톤 + 바운딩 박스)
-    if (poseResultsRef.current && Array.isArray(poseResultsRef.current)) {
-      // 디버깅: 첫 프레임에 keypoints 정보 출력
-      if (Math.random() < 0.01) {  // 100프레임 당 1번만 출력
-        console.log('🎯 Drawing MoveNet pose - keypoints:', poseResultsRef.current.length);
-        console.log('Sample keypoint:', poseResultsRef.current[0]);
-      }
-
-      // 바운딩 박스 계산용 변수
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      let validKeypoints = 0;
-
-      // MoveNet keypoints 그리기
-      poseResultsRef.current.forEach((keypoint: any) => {
-        if (keypoint.score && keypoint.score > 0.3) {
-          const x = keypoint.x;
-          const y = keypoint.y;
-          minX = Math.min(minX, x);
-          minY = Math.min(minY, y);
-          maxX = Math.max(maxX, x);
-          maxY = Math.max(maxY, y);
-          validKeypoints++;
-          const { x: px, y: py } = toCanvasPx(x, y);
-          ctx.beginPath();
-          ctx.arc(px, py, 5, 0, 2 * Math.PI);
-          ctx.fillStyle = '#00FF88';
-          ctx.fill();
-          ctx.strokeStyle = '#0088FF';
-          ctx.lineWidth = 2;
-          ctx.stroke();
-        }
-      });
-
-      // 연결선 그리기
-      const connections = [
-        [5, 6], [5, 7], [7, 9], [6, 8], [8, 10],
-        [5, 11], [6, 12], [11, 12],
-        [11, 13], [13, 15], [12, 14], [14, 16]
-      ];
-      ctx.strokeStyle = '#0088FF';
-      ctx.lineWidth = 2;
-      connections.forEach(([i, j]) => {
-        const kp1 = poseResultsRef.current[i];
-        const kp2 = poseResultsRef.current[j];
-        if (kp1 && kp2 && kp1.score > 0.3 && kp2.score > 0.3) {
-          const p1 = toCanvasPx(kp1.x, kp1.y);
-          const p2 = toCanvasPx(kp2.x, kp2.y);
-          ctx.beginPath();
-          ctx.moveTo(p1.x, p1.y);
-          ctx.lineTo(p2.x, p2.y);
-          ctx.stroke();
-        }
-      });
-
-      // 몸 감지 바운딩 박스
-      if (validKeypoints > 5) {
-        const padding = 0.05;
-        const bMinX = Math.max(0, minX - padding);
-        const bMinY = Math.max(0, minY - padding);
-        const bMaxX = Math.min(1, maxX + padding);
-        const bMaxY = Math.min(1, maxY + padding);
-        const { x: boxX, y: boxY } = toCanvasPx(bMinX, bMinY);
-        const boxWidth = (bMaxX - bMinX) * videoW * coverScale;
-        const boxHeight = (bMaxY - bMinY) * videoH * coverScale;
-        ctx.strokeStyle = '#0088FF';
-        ctx.lineWidth = 3;
-        ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
-        ctx.fillStyle = 'rgba(0, 136, 255, 0.8)';
-        ctx.fillRect(boxX, boxY - 35, 100, 30);
-        ctx.fillStyle = '#FFFFFF';
-        ctx.font = 'bold 16px Arial';
-        ctx.fillText('몸 감지', boxX + 10, boxY - 12);
-      }
-    }
+    // 포즈 바운딩 박스 좌표 — 제스처 인식 후 조건부 표시용
+    // MoveNet은 "위험" 제스처 판별(어깨 위치 비교)에만 사용
+    // 키포인트 점·스켈레톤·바운딩 박스는 화면에 표시하지 않음
 
     let recognizedGesture: string | null = null;
 
@@ -604,26 +574,119 @@ export default function RealSignLanguageScreen() {
       ctx.fillText(label, boxX + 10, boxY - 18);
     };
 
-    // 1. 위험 - 양손이 어깨 위 (MoveNet pose 필요)
-    if (results.multiHandLandmarks && results.multiHandLandmarks.length === 2 && poseResultsRef.current) {
-      const hand1 = results.multiHandLandmarks[0];
-      const hand2 = results.multiHandLandmarks[1];
+    // === MoveNet 포즈 기반 긴급 제스처 감지 (7종) ===
+    if (poseResultsRef.current && Array.isArray(poseResultsRef.current)) {
+      const kp = poseResultsRef.current;
+      const v = (k: any) => k && typeof k.score === 'number' && k.score > 0.3;
 
-      const hand1AvgY = hand1.reduce((sum: number, lm: any) => sum + lm.y, 0) / hand1.length;
-      const hand2AvgY = hand2.reduce((sum: number, lm: any) => sum + lm.y, 0) / hand2.length;
+      const nose          = kp[0];
+      const leftShoulder  = kp[5],  rightShoulder = kp[6];
+      const leftWrist     = kp[9],  rightWrist    = kp[10];
+      const leftHip       = kp[11], rightHip      = kp[12];
 
-      const leftShoulder = poseResultsRef.current[5];
-      const rightShoulder = poseResultsRef.current[6];
+      let poseGesture: string | null = null;
+      let poseColor = '#FF0000';
+      let poseEmoji = '🚨';
 
-      const isHand1AboveShoulder = leftShoulder && leftShoulder.score > 0.3 && hand1AvgY < leftShoulder.y;
-      const isHand2AboveShoulder = rightShoulder && rightShoulder.score > 0.3 && hand2AvgY < rightShoulder.y;
+      // 1순위: 쓰러짐/의식불명 — 코가 어깨 평균보다 아래 (넘어진 상태)
+      if (!poseGesture && v(nose) && v(leftShoulder) && v(rightShoulder)) {
+        const shoulderAvgY = (leftShoulder.y + rightShoulder.y) / 2;
+        if (nose.y > shoulderAvgY + 0.05) {
+          poseGesture = '쓰러졌어요'; poseColor = '#FF0000'; poseEmoji = '🆘';
+        }
+      }
 
-      if (isHand1AboveShoulder && isHand2AboveShoulder) {
-        recognizedGesture = '위험';
-        setPoseDetected(true);
-        drawTwoHandBox(hand1, hand2, '🚨 ' + recognizedGesture, '#FF0000');
-      } else {
-        setPoseDetected(false);
+      // 2순위: 기절위기 — 어깨가 심하게 기울어짐 (한쪽으로 쓰러지는 중)
+      if (!poseGesture && v(leftShoulder) && v(rightShoulder)) {
+        if (Math.abs(leftShoulder.y - rightShoulder.y) > 0.18) {
+          poseGesture = '기절위기'; poseColor = '#FF4500'; poseEmoji = '⚠️';
+        }
+      }
+
+      // 3순위: 위험 — 양손이 어깨 위 (MediaPipe 손 랜드마크 + MoveNet 어깨)
+      if (!poseGesture && results.multiHandLandmarks?.length === 2 && v(leftShoulder) && v(rightShoulder)) {
+        const h1 = results.multiHandLandmarks[0];
+        const h2 = results.multiHandLandmarks[1];
+        const h1AvgY = h1.reduce((s: number, lm: any) => s + lm.y, 0) / h1.length;
+        const h2AvgY = h2.reduce((s: number, lm: any) => s + lm.y, 0) / h2.length;
+        if (h1AvgY < leftShoulder.y && h2AvgY < rightShoulder.y) {
+          poseGesture = '위험'; poseColor = '#FF0000'; poseEmoji = '🚨';
+        }
+      }
+
+      // 4순위: SOS — 팔을 X자로 교차 (가슴 앞에서)
+      if (!poseGesture && v(leftWrist) && v(rightWrist) && v(leftShoulder) && v(rightShoulder)) {
+        const crossed = leftWrist.x > rightWrist.x;
+        const sameLevel = Math.abs(leftWrist.y - rightWrist.y) < 0.15;
+        const atChestHeight = leftWrist.y > leftShoulder.y && rightWrist.y > rightShoulder.y;
+        if (crossed && sameLevel && atChestHeight) {
+          poseGesture = 'SOS'; poseColor = '#FF6600'; poseEmoji = '🆘';
+        }
+      }
+
+      // 5순위: 도움요청 — 양팔 T자 크게 벌리기 (어깨 너비 1.8배 이상, 어깨 높이 근방)
+      if (!poseGesture && v(leftWrist) && v(rightWrist) && v(leftShoulder) && v(rightShoulder)) {
+        const shoulderW = Math.abs(leftShoulder.x - rightShoulder.x);
+        const wristW = Math.abs(leftWrist.x - rightWrist.x);
+        const shoulderAvgY = (leftShoulder.y + rightShoulder.y) / 2;
+        const wristAvgY = (leftWrist.y + rightWrist.y) / 2;
+        if (wristW > shoulderW * 1.8 && Math.abs(wristAvgY - shoulderAvgY) < 0.25) {
+          poseGesture = '도움요청'; poseColor = '#FF8800'; poseEmoji = '🙏';
+        }
+      }
+
+      // 6순위: 두통 — 양 손목이 머리(코) 근처에 모임
+      if (!poseGesture && v(nose) && v(leftWrist) && v(rightWrist)) {
+        const lDist = Math.hypot(leftWrist.x - nose.x, leftWrist.y - nose.y);
+        const rDist = Math.hypot(rightWrist.x - nose.x, rightWrist.y - nose.y);
+        if (lDist < 0.18 && rDist < 0.18) {
+          poseGesture = '두통'; poseColor = '#CC44FF'; poseEmoji = '🤕';
+        }
+      }
+
+      // 7순위: 가슴통증 — 한쪽 이상 손목이 가슴 중앙(어깨-엉덩이 중간) 근처
+      if (!poseGesture && v(leftShoulder) && v(rightShoulder) && v(leftHip) && v(rightHip)) {
+        const chestX = (leftShoulder.x + rightShoulder.x) / 2;
+        const chestY = ((leftShoulder.y + rightShoulder.y) / 2 + (leftHip.y + rightHip.y) / 2) / 2;
+        const lNear = v(leftWrist) && Math.hypot(leftWrist.x - chestX, leftWrist.y - chestY) < 0.12;
+        const rNear = v(rightWrist) && Math.hypot(rightWrist.x - chestX, rightWrist.y - chestY) < 0.12;
+        if (lNear || rNear) {
+          poseGesture = '가슴통증'; poseColor = '#FF2255'; poseEmoji = '💔';
+        }
+      }
+
+      // 포즈 감지 시: 몸 바운딩 박스 + 라벨 그리기
+      // poseDetected 상태는 processFrame에서만 관리 (매 프레임 setState 방지)
+      if (poseGesture) {
+        recognizedGesture = poseGesture;
+
+        // 유효 키포인트 전체로 바운딩 박스 계산
+        let bMinX = 1, bMinY = 1, bMaxX = 0, bMaxY = 0;
+        kp.forEach((k: any) => {
+          if (v(k)) {
+            bMinX = Math.min(bMinX, k.x); bMinY = Math.min(bMinY, k.y);
+            bMaxX = Math.max(bMaxX, k.x); bMaxY = Math.max(bMaxY, k.y);
+          }
+        });
+
+        const pad = 0.04;
+        const { x: bx, y: by } = toCanvasPx(Math.max(0, bMinX - pad), Math.max(0, bMinY - pad));
+        const bw = (Math.min(1, bMaxX + pad) - Math.max(0, bMinX - pad)) * videoW * coverScale;
+        const bh = (Math.min(1, bMaxY + pad) - Math.max(0, bMinY - pad)) * videoH * coverScale;
+
+        ctx.strokeStyle = poseColor;
+        ctx.lineWidth = 4;
+        ctx.strokeRect(bx, by, bw, bh);
+
+        const labelText = `${poseEmoji} ${poseGesture}`;
+        ctx.font = 'bold 26px Arial';
+        const labelW = Math.max(ctx.measureText(labelText).width + 24, 140);
+        ctx.fillStyle = poseColor;
+        ctx.globalAlpha = 0.88;
+        ctx.fillRect(bx, by - 46, labelW, 40);
+        ctx.globalAlpha = 1.0;
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillText(labelText, bx + 10, by - 16);
       }
     }
 
@@ -792,10 +855,10 @@ export default function RealSignLanguageScreen() {
     try {
       console.log('🎥 Starting camera...');
 
-      // 모바일: landscape 제약 금지 — 브라우저가 portrait raw 프레임을 MediaPipe에 전달하도록 제약 최소화
+      // 모바일: 해상도 상한 지정 (무제한 시 12MP 스트림으로 열려 MediaPipe FPS 급락)
       // 데스크탑: HD(1280×720) ideal 지정
       const videoConstraints = isMobileWeb
-        ? { facingMode: 'user' }
+        ? { facingMode: 'user', width: { ideal: 640, max: 1280 }, height: { ideal: 480, max: 720 }, frameRate: { ideal: 30 } }
         : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: 'user' };
 
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -820,15 +883,20 @@ export default function RealSignLanguageScreen() {
         await new Promise<void>((resolve) => {
           video.onloadedmetadata = () => {
             console.log(`📹 Video metadata loaded: ${video.videoWidth}x${video.videoHeight}`);
+            // 세로 촬영 여부 저장 → 제스처 임계값 동적 조정에 활용
+            isPortraitRef.current = video.videoWidth < video.videoHeight;
+            console.log(`📐 Portrait mode: ${isPortraitRef.current}`);
 
-            // canvas를 표시 컨테이너 크기로 설정 — 좌표 매핑은 cover transform으로 처리
-            const displayW = canvasRef.current?.clientWidth;
-            const displayH = canvasRef.current?.clientHeight;
-            canvas.width = (displayW && displayW > 0) ? displayW : 360;
-            canvas.height = (displayH && displayH > 0) ? displayH : 450;
-            console.log(`🎨 Canvas size set: ${canvas.width}x${canvas.height}`);
-
-            resolve();
+            // requestAnimationFrame으로 레이아웃 완료 후 캔버스 크기 설정
+            // 모바일에서 onloadedmetadata 시점에 clientWidth/Height가 0인 경우 대응
+            requestAnimationFrame(() => {
+              const displayW = canvasRef.current?.clientWidth;
+              const displayH = canvasRef.current?.clientHeight;
+              canvas.width = (displayW && displayW > 0) ? displayW : (isMobileWeb ? 360 : 640);
+              canvas.height = (displayH && displayH > 0) ? displayH : 450;
+              console.log(`🎨 Canvas size set: ${canvas.width}x${canvas.height}`);
+              resolve();
+            });
           };
         });
 
@@ -886,10 +954,17 @@ export default function RealSignLanguageScreen() {
 
         console.log('🔧 Initializing TensorFlow.js backend...');
 
-        // TensorFlow backend 설정
-        await window.tf.setBackend('webgl');
-        await window.tf.ready();
-        console.log('✅ TensorFlow.js backend ready');
+        // WebGL 시도 → 실패 시 CPU 폴백 (저사양 모바일 대응)
+        try {
+          await window.tf.setBackend('webgl');
+          await window.tf.ready();
+          console.log('✅ TensorFlow.js backend ready (WebGL)');
+        } catch (webglErr) {
+          console.warn('⚠️ WebGL unavailable, falling back to CPU:', webglErr);
+          await window.tf.setBackend('cpu');
+          await window.tf.ready();
+          console.log('✅ TensorFlow.js backend ready (CPU fallback)');
+        }
 
         setAiLoadingStage('movenet');
         console.log('🔧 Loading MoveNet model...');
@@ -935,7 +1010,17 @@ export default function RealSignLanguageScreen() {
                   }
 
                   if (poses && poses.length > 0 && poses[0].keypoints) {
-                    poseResultsRef.current = poses[0].keypoints;
+                    // MoveNet은 픽셀 좌표(0~videoWidth/Height)를 반환 →
+                    // MediaPipe 정규화 좌표(0~1)와 혼용 시 비교 오류 발생
+                    // 모바일에서 어깨가 잡히면 "위험"이 항상 발동되는 버그의 근본 원인
+                    const vw = videoRef.current?.videoWidth || 1;
+                    const vh = videoRef.current?.videoHeight || 1;
+                    const normalizedKeypoints = poses[0].keypoints.map((kp: any) => ({
+                      ...kp,
+                      x: kp.x / vw,
+                      y: kp.y / vh,
+                    }));
+                    poseResultsRef.current = normalizedKeypoints;
                     setPoseDetected(true);
                   } else {
                     poseResultsRef.current = null;
@@ -1063,7 +1148,6 @@ export default function RealSignLanguageScreen() {
     setPoseDetected(false);
     setMotionDetected(false);
     setAiLoadingStage('idle');
-    // 손목 히스토리도 비우기
     wristHistoryRef.current = [[], []];
   };
 
@@ -1325,21 +1409,38 @@ export default function RealSignLanguageScreen() {
                 </Text>
               </View>
 
-              {/* 긴급 상황 (119) */}
+              {/* 긴급 상황 - 손 제스처 */}
               <View style={styles.emergencySection}>
-                <Text style={styles.emergencySectionTitle}>🚨 긴급 상황 (119 관련)</Text>
+                <Text style={styles.emergencySectionTitle}>🚨 긴급 상황 — 손 제스처</Text>
                 <Text style={styles.emergencyText}>
-                  • 🎯👐 위험 - 양손을 어깨보다 높이 들기 (몸 전체 인식 필요){'\n'}
+                  • 🎯👐 위험 - 양손을 어깨보다 높이 들기{'\n'}
                   • 🎯 경찰 - 검지만 펴서 얼굴 높이로 들기{'\n'}
-                  • 🎯👐 병원 - 양손 모두 검지만 펴고 두 검지 끝을 가깝게{'\n'}
+                  • 🎯👐 병원 - 양손 검지만 펴고 두 끝을 가깝게{'\n'}
                   • 🎯 아파요 - 주먹을 얼굴(이마) 가까이로{'\n'}
                   • 🎯 119 - 검지+중지+약지 세 손가락 펴기 (W자){'\n'}
-                  • 🎯 전화 - 엄지+새끼만 펴기 (🤙 shaka){'\n'}
-                  • 🔄 구급차 - 손바닥 펴고 좌우로 흔들기 (중간 높이){'\n'}
+                  • 🎯 전화 - 엄지+새끼만 펴기 (🤙){'\n'}
+                  • 🔄 구급차 - 손바닥 펴고 좌우로 흔들기{'\n'}
                   • 🔄👐 급해요 - 양손 모두 펴고 동시에 좌우로 흔들기
                 </Text>
                 <Text style={styles.emergencyTextFooter}>
-                  💡 모션 인식: 손목 좌표를 0.5초간 추적해 표준편차+방향전환 기반 진동 감지. 좌우로 3회 이상 흔들어야 인식됩니다.
+                  💡 모션 인식: 손목을 0.5초간 추적해 표준편차+방향전환 기반 흔들기 감지
+                </Text>
+              </View>
+
+              {/* 긴급 상황 - 몸 전체 포즈 (MoveNet) */}
+              <View style={[styles.emergencySection, { marginTop: 10, borderColor: '#FF8800' }]}>
+                <Text style={styles.emergencySectionTitle}>🦴 긴급 포즈 — 몸 전체 인식 (MoveNet)</Text>
+                <Text style={styles.emergencyText}>
+                  • 🆘 쓰러졌어요 - 몸이 쓰러져 코가 어깨보다 아래로 내려간 상태{'\n'}
+                  • ⚠️ 기절위기 - 한쪽으로 심하게 기울어진 상태 (어깨 높이 차이 큼){'\n'}
+                  • 🚨 위험 - 양손을 어깨 위로 높이 들기{'\n'}
+                  • 🆘 SOS - 팔을 가슴 앞에서 X자로 교차{'\n'}
+                  • 🙏 도움요청 - 양팔을 T자로 크게 벌리기{'\n'}
+                  • 🤕 두통 - 양 손목을 머리 근처로 가져가기{'\n'}
+                  • 💔 가슴통증 - 손을 가슴 중앙으로 가져가기
+                </Text>
+                <Text style={styles.emergencyTextFooter}>
+                  💡 몸 포즈 인식: TensorFlow.js MoveNet이 17개 신체 키포인트를 분석해 전신 자세를 감지합니다. 인식 시 바운딩 박스와 제스처명이 함께 표시됩니다.
                 </Text>
               </View>
             </View>
@@ -1404,15 +1505,15 @@ export default function RealSignLanguageScreen() {
           <Text style={styles.techInfoTitle}>🔬 사용 중인 기술</Text>
           <View style={styles.techList}>
             <Text style={styles.techItem}>✅ MediaPipe Hands - 21개 손 랜드마크 추출 (손 동작 인식)</Text>
-            <Text style={styles.techItem}>✅ TensorFlow.js MoveNet Lightning - 17개 몸 키포인트 (전신 자세 추정)</Text>
-            <Text style={styles.techItem}>✅ 실시간 바운딩 박스 시각화 (손: 초록 / 몸: 파랑 / 위험: 빨강 / 병원: 파랑)</Text>
+            <Text style={styles.techItem}>✅ TensorFlow.js MoveNet Lightning - 17개 신체 키포인트로 7종 긴급 포즈 감지 (쓰러짐/기절위기/위험/SOS/도움요청/두통/가슴통증)</Text>
+            <Text style={styles.techItem}>✅ 손 크기 기반 동적 임계값 — 카메라 거리·모바일/PC 환경에 자동 적응</Text>
+            <Text style={styles.techItem}>✅ 모바일 최적화 — User-Agent+터치 감지, portrait 모드 임계값 분기, 해상도 제한(640×480), WebGL→CPU 폴백</Text>
+            <Text style={styles.techItem}>✅ MoveNet 좌표 정규화 — 픽셀→0~1 변환으로 MediaPipe 좌표와 혼용 오류 수정</Text>
+            <Text style={styles.techItem}>✅ 실시간 바운딩 박스 — 손(초록) / 포즈 제스처(제스처별 색상 + 이모지 라벨)</Text>
             <Text style={styles.techItem}>✅ 정적 패턴 인식 - 11가지 수어 (기본 6 + 긴급 5)</Text>
-            <Text style={styles.techItem}>✅ 모션 패턴 인식 - 손목 좌표 0.5초 추적 → 표준편차+방향전환 기반 흔들기 감지 (구급차/급해요)</Text>
-            <Text style={styles.techItem}>✅ 제스처 안정화 필터 (5프레임 연속 검증)</Text>
-            <Text style={styles.techItem}>✅ 긴급 제스처 우선순위 큐 (위험/119/병원/전화 등 즉시 처리)</Text>
-            <Text style={styles.techItem}>✅ 다단계 AI 로딩 표시 (MediaPipe → TensorFlow → MoveNet)</Text>
-            <Text style={styles.techItem}>✅ CDN 폴백 (jsdelivr → unpkg, 자산 버전 핀)</Text>
-            <Text style={styles.techItem}>✅ HD 카메라 (1280x720 @ 30fps) — 초기 로딩 최적화</Text>
+            <Text style={styles.techItem}>✅ 모션 패턴 인식 - 손목 0.5초 추적 → 표준편차+방향전환 기반 흔들기 감지 (구급차/급해요)</Text>
+            <Text style={styles.techItem}>✅ 제스처 안정화 필터 (5프레임 연속 검증) + 긴급 우선순위 큐</Text>
+            <Text style={styles.techItem}>✅ CDN 폴백 (jsdelivr → unpkg) · 다단계 AI 로딩 표시</Text>
             <Text style={styles.techItem}>✅ Web Speech API - 한국어 TTS + 자막 동기화</Text>
           </View>
         </View>
