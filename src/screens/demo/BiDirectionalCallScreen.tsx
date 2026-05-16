@@ -89,7 +89,8 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const canvasRef       = useRef<HTMLCanvasElement>(null);
   const localStreamRef  = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
-  const subClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null); // 자막 timeout 단일 관리
+  const subClearTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ttsPlayingRef     = useRef(false); // TTS 재생 중 플래그 → STT 에코 차단용
   const socketRef       = useRef<Socket | null>(null);
   const pcRef           = useRef<RTCPeerConnection | null>(null);
   const dcRef           = useRef<RTCDataChannel | null>(null);
@@ -168,9 +169,21 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
         utt.rate    = 1.15;
         utt.pitch   = 1.0;
         utt.volume  = 1.0;
-        utt.onstart = () => setIsSpeaking(true);
-        utt.onend   = () => setIsSpeaking(false);
-        utt.onerror = () => setIsSpeaking(false);
+        utt.onstart = () => {
+          setIsSpeaking(true);
+          ttsPlayingRef.current = true;
+          // TTS 재생 중 STT 일시 중단 → 스피커 음성 에코 캡처 방지
+          try { recognitionRef.current?.abort(); } catch { /* 무시 */ }
+        };
+        utt.onend = () => {
+          setIsSpeaking(false);
+          ttsPlayingRef.current = false;
+          // TTS 종료 후 STT는 onend 핸들러가 자동 재시작
+        };
+        utt.onerror = () => {
+          setIsSpeaking(false);
+          ttsPlayingRef.current = false;
+        };
         requestAnimationFrame(() => {
           if (synth.paused) synth.resume();
           synth.speak(utt);
@@ -386,7 +399,8 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     sttActiveRef.current = true;
 
     const startRecognition = () => {
-      if (!sttActiveRef.current) return;
+      // TTS 재생 중이면 STT 시작 거부 → 에코 방지
+      if (!sttActiveRef.current || ttsPlayingRef.current) return;
 
       const recognition = new SR();
       // WebRTC 마이크 점유 후 SpeechRecognition이 동일 트랙을 사용하도록
