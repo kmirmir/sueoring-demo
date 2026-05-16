@@ -102,7 +102,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const cleanup = useCallback(() => {
     animFrameRef.current && cancelAnimationFrame(animFrameRef.current);
     sttActiveRef.current = false;
-    recognitionRef.current?.abort?.();
+    try { recognitionRef.current?.abort(); } catch { /* 무시 */ }
     handsRef.current?.close?.();
     dcRef.current?.close();
     pcRef.current?.close();
@@ -150,11 +150,15 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       setCurrentSub(text);
       setMessages(prev => [...prev, { text, from: 'partner', ts: Date.now() }]);
       // 청인이 받으면 TTS 재생
+      // Chrome WebRTC 세션 중 cancel()이 autoplay 플래그를 리셋하는 버그 → cancel 제거
+      // paused 상태일 경우 resume() 먼저 호출
       if (role === 'hearing' && Platform.OS === 'web' && 'speechSynthesis' in window) {
+        const synth = window.speechSynthesis;
+        if (synth.speaking) synth.cancel();
         const utt = new SpeechSynthesisUtterance(text);
-        utt.lang = 'ko-KR'; utt.rate = 1.1;
-        window.speechSynthesis.cancel();
-        window.speechSynthesis.speak(utt);
+        utt.lang = 'ko-KR'; utt.rate = 1.0; utt.pitch = 1.0; utt.volume = 1.0;
+        if (synth.paused) synth.resume();
+        setTimeout(() => synth.speak(utt), 100);
       }
       setTimeout(() => setCurrentSub(''), 4000);
     } catch { /* 무시 */ }
@@ -176,6 +180,16 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     // ICE candidate → 시그널링 서버 중계
     pc.onicecandidate = ({ candidate }) => {
       if (candidate) socketRef.current?.emit('room-ice', { roomCode: code, candidate });
+    };
+
+    // ICE 연결 상태 변화 → 양쪽 모두 connStatus 업데이트
+    // room-answer 이벤트는 initiator에서만 처리되므로 이쪽으로 통일
+    pc.oniceconnectionstatechange = () => {
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        setConnStatus('connected');
+      } else if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+        setConnStatus('idle');
+      }
     };
 
     // 원격 영상 스트림 수신
@@ -352,51 +366,59 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   // ── Web Speech API STT (청인 전용) ───────────────────────
   const initSTT = () => {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR) { setError('이 브라우저는 음성 인식을 지원하지 않습니다. (Chrome 권장)'); return; }
-
-    const recognition = new SR();
-    recognition.lang = 'ko-KR';
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.maxAlternatives = 1;
+    if (!SR) { setError('음성 인식을 지원하지 않습니다. Chrome 브라우저를 사용해주세요.'); return; }
 
     sttActiveRef.current = true;
 
-    const safeStart = () => {
+    const startRecognition = () => {
       if (!sttActiveRef.current) return;
-      try { recognition.start(); } catch { /* 이미 실행 중 */ }
-    };
 
-    recognition.onresult = (e: any) => {
-      let interim = '', final = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const t = e.results[i][0].transcript;
-        if (e.results[i].isFinal) final += t;
-        else interim += t;
-      }
-      setSttLive(interim);
-      if (final.trim()) {
-        setSttLive('');
-        const text = final.trim();
-        setMessages(prev => [...prev, { text, from: 'me', ts: Date.now() }]);
-        if (dcRef.current?.readyState === 'open') {
-          dcRef.current.send(JSON.stringify({ type: 'speech', text }));
+      const recognition = new SR();
+      // WebRTC 마이크 점유 후 SpeechRecognition이 동일 트랙을 사용하도록
+      // lang을 명시적으로 'ko-KR'로 강제 설정
+      recognition.lang = 'ko-KR';
+      recognition.continuous = false;       // false로 설정 후 onend 재시작이 더 안정적
+      recognition.interimResults = true;
+      recognition.maxAlternatives = 3;      // 여러 후보로 인식률 향상
+
+      recognition.onresult = (e: any) => {
+        let interim = '', final = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          // maxAlternatives 중 신뢰도 가장 높은 첫 번째 선택
+          const t = e.results[i][0].transcript;
+          if (e.results[i].isFinal) final += t;
+          else interim += t;
         }
-      }
+        setSttLive(interim);
+        if (final.trim()) {
+          setSttLive('');
+          const text = final.trim();
+          setMessages(prev => [...prev, { text, from: 'me', ts: Date.now() }]);
+          if (dcRef.current?.readyState === 'open') {
+            dcRef.current.send(JSON.stringify({ type: 'speech', text }));
+          }
+        }
+      };
+
+      // 한 세션 종료 후 즉시 재시작 (continuous 대신 이 방식이 더 안정적)
+      recognition.onend = () => { if (sttActiveRef.current) setTimeout(startRecognition, 150); };
+
+      recognition.onerror = (e: any) => {
+        if (e.error === 'aborted' || e.error === 'interrupted') return;
+        if (sttActiveRef.current) {
+          const delay = e.error === 'no-speech' ? 150 : 1000;
+          setTimeout(startRecognition, delay);
+        }
+      };
+
+      try {
+        recognition.start();
+        recognitionRef.current = recognition;
+      } catch { /* 동시 시작 방지 */ }
     };
 
-    // 인식 종료 시 자동 재시작 (pauses, network 등으로 중단되어도 유지)
-    recognition.onend = () => { setTimeout(safeStart, 200); };
-
-    // 오류별 처리: no-speech는 정상(말 없음), 나머지는 잠시 후 재시작
-    recognition.onerror = (e: any) => {
-      if (e.error === 'aborted') return;
-      const delay = e.error === 'no-speech' ? 100 : 800;
-      setTimeout(safeStart, delay);
-    };
-
-    recognition.start();
-    recognitionRef.current = recognition;
+    // WebRTC 마이크 획득 직후 바로 시작하면 충돌 가능 → 500ms 딜레이
+    setTimeout(startRecognition, 500);
   };
 
   // ── 방 만들기 ────────────────────────────────────────────
