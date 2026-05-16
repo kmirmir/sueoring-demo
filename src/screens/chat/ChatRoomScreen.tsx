@@ -10,7 +10,7 @@ import DeafParticipantView from '@/components/chat/DeafParticipantView';
 import HearingParticipantView from '@/components/chat/HearingParticipantView';
 import WaitingArea from '@/components/chat/WaitingArea';
 
-const SERVER_URL = 'http://localhost:3001';
+const SERVER_URL = process.env.EXPO_PUBLIC_SERVER_URL || 'http://localhost:3001';
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
