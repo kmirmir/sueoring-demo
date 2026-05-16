@@ -16,14 +16,19 @@ import SignLanguageDemoScreen from './src/screens/demo/SignLanguageDemoScreen';
 import RealSignLanguageScreen from './src/screens/demo/RealSignLanguageScreen';
 import GestureLearningScreen from './src/screens/learning/GestureLearningScreen';
 import SignDictionaryScreen from './src/screens/dictionary/SignDictionaryScreen';
+import ChatLobbyScreen from './src/screens/chat/ChatLobbyScreen';
+import ChatRoomScreen from './src/screens/chat/ChatRoomScreen';
 
-type Screen = 'home' | 'login' | 'otp' | 'userType' | 'mainApp' | 'incomingCall' | 'outgoingCall' | 'activeCall' | 'signLanguageDemo' | 'realSignLanguage' | 'gestureLearning' | 'signDictionary';
+type Screen = 'home' | 'login' | 'otp' | 'userType' | 'mainApp' | 'incomingCall' | 'outgoingCall' | 'activeCall' | 'signLanguageDemo' | 'realSignLanguage' | 'gestureLearning' | 'signDictionary' | 'chatLobby' | 'chatRoom';
 type UserType = 'deaf' | 'hearing' | null;
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<Screen>('home');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [userType, setUserType] = useState<UserType>('deaf'); // 기본값 설정
+  const [chatRoomCode, setChatRoomCode] = useState('');
+  const [chatRoomRole, setChatRoomRole] = useState<'creator' | 'joiner'>('creator');
+  const [chatUserType, setChatUserType] = useState<'deaf' | 'hearing'>('deaf');
 
   const handleLogin = (phone: string) => {
     setPhoneNumber(phone);
@@ -101,6 +106,17 @@ export default function App() {
     setCurrentScreen('signDictionary');
   };
 
+  const handleChatLobby = () => {
+    setCurrentScreen('chatLobby');
+  };
+
+  const handleEnterChatRoom = (code: string, role: 'creator' | 'joiner', selectedType: 'deaf' | 'hearing') => {
+    setChatRoomCode(code);
+    setChatRoomRole(role);
+    setChatUserType(selectedType);
+    setCurrentScreen('chatRoom');
+  };
+
   switch (currentScreen) {
     case 'login':
       return <LoginScreen onLogin={handleLogin} />;
@@ -161,6 +177,25 @@ export default function App() {
     case 'signDictionary':
       return <SignDictionaryScreen onBack={() => setCurrentScreen('home')} />;
 
+    case 'chatLobby':
+      return (
+        <ChatLobbyScreen
+          userType={userType}
+          onRoomReady={handleEnterChatRoom}
+          onBack={() => setCurrentScreen('home')}
+        />
+      );
+
+    case 'chatRoom':
+      return (
+        <ChatRoomScreen
+          roomCode={chatRoomCode}
+          userType={chatUserType}
+          role={chatRoomRole}
+          onLeave={() => setCurrentScreen('home')}
+        />
+      );
+
     case 'home':
     case 'mainApp':
       return (
@@ -171,6 +206,7 @@ export default function App() {
           onRealSignLanguage={handleRealSignLanguage}
           onGestureLearning={handleGestureLearning}
           onSignDictionary={handleSignDictionary}
+          onChatRoom={handleChatLobby}
         />
       );
 

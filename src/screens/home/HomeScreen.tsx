@@ -13,9 +13,10 @@ interface HomeScreenProps {
   onRealSignLanguage?: () => void;
   onGestureLearning?: () => void;
   onSignDictionary?: () => void;
+  onChatRoom?: () => void;
 }
 
-export default function HomeScreen({ onTestIncomingCall, onTestOutgoingCall, onSignLanguageDemo, onRealSignLanguage, onGestureLearning, onSignDictionary }: HomeScreenProps = {}) {
+export default function HomeScreen({ onTestIncomingCall, onTestOutgoingCall, onSignLanguageDemo, onRealSignLanguage, onGestureLearning, onSignDictionary, onChatRoom }: HomeScreenProps = {}) {
   return (
     <View style={styles.container}>
       <StatusBar style="auto" />
@@ -184,6 +185,12 @@ export default function HomeScreen({ onTestIncomingCall, onTestOutgoingCall, onS
             {onTestOutgoingCall && (
               <TouchableOpacity style={styles.demoButton} onPress={onTestOutgoingCall}>
                 <Text style={styles.demoButtonText}>📱 발신 통화 화면</Text>
+              </TouchableOpacity>
+            )}
+
+            {onChatRoom && (
+              <TouchableOpacity style={[styles.demoButton, styles.demoButton_chat]} onPress={onChatRoom}>
+                <Text style={styles.demoButtonText}>💬 1:1 실시간 대화방</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -376,6 +383,9 @@ const styles = StyleSheet.create({
   },
   demoButton_highlight: {
     backgroundColor: colors.error.main,
+  },
+  demoButton_chat: {
+    backgroundColor: '#059669',
   },
   demoButtonText: {
     fontSize: fonts.sizes.base,

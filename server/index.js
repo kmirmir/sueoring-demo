@@ -23,6 +23,25 @@ app.use(express.json());
 // 연결된 사용자 관리
 const users = new Map(); // socketId -> { userId, userType, userName }
 const rooms = new Map(); // roomId -> { users: [socketId], callStarted: boolean }
+const chatRooms = new Map(); // roomCode -> { code, members: [{socketId, userType, userName}] }
+const validRoomCodes = new Set(); // 생성된 방 코드 (로비 검증용)
+
+function generateRoomCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  return code;
+}
+
+function cleanupChatRooms(socketId) {
+  for (const [code, room] of chatRooms.entries()) {
+    const idx = room.members.findIndex(m => m.socketId === socketId);
+    if (idx === -1) continue;
+    room.members.splice(idx, 1);
+    io.to(`chat-${code}`).emit('chat-member-left', { members: room.members, leftSocketId: socketId });
+    if (room.members.length === 0) { chatRooms.delete(code); validRoomCodes.delete(code); }
+  }
+}
 
 // 헬스체크 엔드포인트
 app.get('/health', (req, res) => {
@@ -135,6 +154,61 @@ io.on('connection', (socket) => {
     });
   });
 
+  // ── 1:1 대화방 이벤트 ──────────────────────────────────────────
+  // 로비: 방 코드 생성 (소켓 방에 참가하지 않음)
+  socket.on('create-chat-room', ({ userType, userName }) => {
+    let code;
+    do { code = generateRoomCode(); } while (validRoomCodes.has(code));
+    validRoomCodes.add(code);
+    socket.emit('chat-room-created', { roomCode: code });
+    console.log(`💬 방 코드 생성: ${code} by ${userName}(${userType})`);
+  });
+
+  // 로비: 방 코드 유효성 검증만 (소켓 방에 참가하지 않음)
+  socket.on('check-room-code', ({ roomCode }) => {
+    if (!validRoomCodes.has(roomCode)) {
+      socket.emit('chat-room-error', { message: '존재하지 않는 방 코드입니다' });
+    } else {
+      socket.emit('room-code-valid', { roomCode });
+    }
+  });
+
+  // ChatRoomScreen 전용: 실제 방 참가
+  socket.on('join-chat-room', ({ roomCode, userType, userName }) => {
+    if (!validRoomCodes.has(roomCode)) validRoomCodes.add(roomCode); // 엣지 케이스 대비
+    let room = chatRooms.get(roomCode);
+    if (!room) {
+      room = { code: roomCode, members: [] };
+      chatRooms.set(roomCode, room);
+    }
+    if (room.members.length >= 2) { socket.emit('chat-room-error', { message: '방이 가득 찼습니다' }); return; }
+    if (!room.members.find(m => m.socketId === socket.id)) {
+      room.members.push({ socketId: socket.id, userType, userName });
+    }
+    socket.join(`chat-${roomCode}`);
+    io.to(`chat-${roomCode}`).emit('chat-member-joined', { members: room.members, newMember: { socketId: socket.id, userType, userName } });
+    console.log(`💬 대화방 입장: ${roomCode} by ${userName}(${userType})`);
+  });
+
+  socket.on('chat-gesture', ({ roomCode, gesture, timestamp }) => {
+    socket.to(`chat-${roomCode}`).emit('chat-gesture-received', { gesture, timestamp, senderSocketId: socket.id });
+  });
+
+  socket.on('chat-stt', ({ roomCode, text, timestamp }) => {
+    socket.to(`chat-${roomCode}`).emit('chat-stt-received', { text, timestamp, senderSocketId: socket.id });
+  });
+
+  socket.on('leave-chat-room', ({ roomCode }) => {
+    cleanupChatRooms(socket.id);
+    socket.leave(`chat-${roomCode}`);
+  });
+
+  // ── 채팅방 WebRTC 시그널링 릴레이 ─────────────────────────────
+  socket.on('chat-offer',         ({ targetSocketId, offer })     => io.to(targetSocketId).emit('chat-offer-received',         { offer,      fromSocketId: socket.id }));
+  socket.on('chat-answer',        ({ targetSocketId, answer })    => io.to(targetSocketId).emit('chat-answer-received',        { answer,     fromSocketId: socket.id }));
+  socket.on('chat-ice-candidate', ({ targetSocketId, candidate }) => io.to(targetSocketId).emit('chat-ice-candidate-received', { candidate, fromSocketId: socket.id }));
+  // ───────────────────────────────────────────────────────────────
+
   // 연결 해제
   socket.on('disconnect', () => {
     console.log(`❌ 연결 해제: ${socket.id}`);
@@ -146,6 +220,7 @@ io.on('connection', (socket) => {
 
     // 방 정리 및 상대방에게 알림
     cleanupUserRooms(socket.id);
+    cleanupChatRooms(socket.id);
 
     // 사용자 목록에서 제거
     users.delete(socket.id);
