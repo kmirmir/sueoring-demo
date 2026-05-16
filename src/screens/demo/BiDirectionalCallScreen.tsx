@@ -505,10 +505,18 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     requestAnimationFrame(() => {
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = remoteStream;
+
+        // 농인 화면: 청인의 WebRTC 오디오 트랙 비활성화
+        // 경로: 청인 TTS 스피커 → 청인 마이크 → WebRTC → 농인 remoteVideo → 하울링
+        if (role === 'deaf') {
+          remoteVideoRef.current.muted = true;
+          remoteStream.getAudioTracks().forEach(track => { track.enabled = false; });
+        }
+
         remoteVideoRef.current.play().catch(() => {});
       }
     });
-  }, [remoteStream]);
+  }, [remoteStream, role]);
 
   // ── 통화 종료 ────────────────────────────────────────────
   const handleEndCall = () => {
