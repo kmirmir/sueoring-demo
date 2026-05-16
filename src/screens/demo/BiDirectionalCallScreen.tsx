@@ -14,6 +14,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity,
   TextInput, Platform, ScrollView, Clipboard,
+  useWindowDimensions,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { fonts, spacing } from '@/constants';
@@ -52,6 +53,10 @@ interface Props { onBack: () => void; }
 
 // ─────────────────────────────────────────────────────────
 export default function BiDirectionalCallScreen({ onBack }: Props) {
+  const { height: screenHeight } = useWindowDimensions();
+  // 헤더(~56px) + 하단 패널(220px) 제외한 원격 영상 높이
+  const remoteVideoHeight = Math.max(screenHeight - 56 - 220, 200);
+
   // 단계 & 역할
   const [phase, setPhase]           = useState<Phase>('lobby');
   const [role, setRole]             = useState<Role>('deaf');
@@ -71,35 +76,38 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const [mpLoaded, setMpLoaded] = useState(false);
 
   // Refs
-  const localVideoRef  = useRef<HTMLVideoElement>(null);
-  const remoteVideoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef      = useRef<HTMLCanvasElement>(null);
-  const socketRef      = useRef<Socket | null>(null);
-  const pcRef          = useRef<RTCPeerConnection | null>(null);
-  const dcRef          = useRef<RTCDataChannel | null>(null);
-  const handsRef       = useRef<any>(null);
-  const recognitionRef = useRef<any>(null);
-  const animFrameRef   = useRef<number | null>(null);
-  const workingCdnRef  = useRef<string>(CDN_PROVIDERS[0]);
-  const currentRoomRef = useRef('');
-  const messagesEndRef = useRef<View>(null);
+  const localVideoRef   = useRef<HTMLVideoElement>(null);
+  const remoteVideoRef  = useRef<HTMLVideoElement>(null);
+  const canvasRef       = useRef<HTMLCanvasElement>(null);
+  const localStreamRef  = useRef<MediaStream | null>(null);   // 스트림 별도 보존
+  const remoteStreamRef = useRef<MediaStream | null>(null);   // 원격 스트림 보존
+  const socketRef       = useRef<Socket | null>(null);
+  const pcRef           = useRef<RTCPeerConnection | null>(null);
+  const dcRef           = useRef<RTCDataChannel | null>(null);
+  const handsRef        = useRef<any>(null);
+  const recognitionRef  = useRef<any>(null);
+  const sttActiveRef    = useRef(false);  // STT 재시작 플래그
+  const animFrameRef    = useRef<number | null>(null);
+  const workingCdnRef   = useRef<string>(CDN_PROVIDERS[0]);
+  const currentRoomRef  = useRef('');
+  const messagesEndRef  = useRef<View>(null);
 
   // ── 정리 ────────────────────────────────────────────────
   const cleanup = useCallback(() => {
     animFrameRef.current && cancelAnimationFrame(animFrameRef.current);
-    recognitionRef.current?.stop();
+    sttActiveRef.current = false;
+    recognitionRef.current?.abort?.();
     handsRef.current?.close?.();
     dcRef.current?.close();
     pcRef.current?.close();
-    if (localVideoRef.current?.srcObject) {
-      (localVideoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop());
-      localVideoRef.current.srcObject = null;
-    }
+    localStreamRef.current?.getTracks().forEach(t => t.stop());
+    localStreamRef.current  = null;
+    remoteStreamRef.current = null;
     socketRef.current?.emit('room-leave', { roomCode: currentRoomRef.current });
     socketRef.current?.disconnect();
-    pcRef.current   = null;
-    dcRef.current   = null;
-    handsRef.current = null;
+    pcRef.current     = null;
+    dcRef.current     = null;
+    handsRef.current  = null;
     socketRef.current = null;
   }, []);
 
@@ -164,10 +172,13 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       if (candidate) socketRef.current?.emit('room-ice', { roomCode: code, candidate });
     };
 
-    // 원격 영상 스트림 수신
+    // 원격 영상 스트림 수신 → ref에 보존 후 video에 연결
     pc.ontrack = ({ streams }) => {
-      if (remoteVideoRef.current && streams[0]) {
+      if (!streams[0]) return;
+      remoteStreamRef.current = streams[0];
+      if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = streams[0];
+        remoteVideoRef.current.play().catch(() => {});
       }
     };
 
@@ -193,10 +204,11 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       setPhase('calling');
       const pc = createPeerConnection(code);
 
-      // 로컬 스트림 추가
-      if (localVideoRef.current?.srcObject) {
-        (localVideoRef.current.srcObject as MediaStream)
-          .getTracks().forEach(t => pc.addTrack(t, localVideoRef.current!.srcObject as MediaStream));
+      // 로컬 스트림을 PC에 추가 (ref에서 직접 참조 — DOM 교체 영향 없음)
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(t =>
+          pc.addTrack(t, localStreamRef.current!)
+        );
       }
 
       if (isInitiator) {
@@ -245,6 +257,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
         video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
         audio: true,
       });
+      localStreamRef.current = stream;   // 별도 ref에 보존
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
         await localVideoRef.current.play();
@@ -335,12 +348,20 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   // ── Web Speech API STT (청인 전용) ───────────────────────
   const initSTT = () => {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR) { setError('이 브라우저는 음성 인식을 지원하지 않습니다.'); return; }
+    if (!SR) { setError('이 브라우저는 음성 인식을 지원하지 않습니다. (Chrome 권장)'); return; }
 
     const recognition = new SR();
     recognition.lang = 'ko-KR';
     recognition.continuous = true;
     recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+
+    sttActiveRef.current = true;
+
+    const safeStart = () => {
+      if (!sttActiveRef.current) return;
+      try { recognition.start(); } catch { /* 이미 실행 중 */ }
+    };
 
     recognition.onresult = (e: any) => {
       let interim = '', final = '';
@@ -352,13 +373,24 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       setSttLive(interim);
       if (final.trim()) {
         setSttLive('');
-        setMessages(prev => [...prev, { text: final.trim(), from: 'me', ts: Date.now() }]);
+        const text = final.trim();
+        setMessages(prev => [...prev, { text, from: 'me', ts: Date.now() }]);
         if (dcRef.current?.readyState === 'open') {
-          dcRef.current.send(JSON.stringify({ type: 'speech', text: final.trim() }));
+          dcRef.current.send(JSON.stringify({ type: 'speech', text }));
         }
       }
     };
-    recognition.onerror = () => recognition.start(); // 오류 시 재시작
+
+    // 인식 종료 시 자동 재시작 (pauses, network 등으로 중단되어도 유지)
+    recognition.onend = () => { setTimeout(safeStart, 200); };
+
+    // 오류별 처리: no-speech는 정상(말 없음), 나머지는 잠시 후 재시작
+    recognition.onerror = (e: any) => {
+      if (e.error === 'aborted') return;
+      const delay = e.error === 'no-speech' ? 100 : 800;
+      setTimeout(safeStart, delay);
+    };
+
     recognition.start();
     recognitionRef.current = recognition;
   };
@@ -392,11 +424,27 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     } catch { /* 에러는 startCamera에서 처리 */ }
   };
 
-  // 통화 시작 시 역할별 기능 초기화
+  // calling 단계 진입 시: 로컬·원격 스트림을 새 video 요소에 재연결
   useEffect(() => {
     if (phase !== 'calling') return;
-    if (role === 'deaf') initMediaPipe().catch(e => setError(`MediaPipe 로드 실패: ${e.message}`));
-    else initSTT();
+
+    // 로컬 PiP 비디오 재연결 (waiting → calling 단계 전환 시 DOM 교체로 srcObject 끊김)
+    if (localVideoRef.current && localStreamRef.current) {
+      localVideoRef.current.srcObject = localStreamRef.current;
+      localVideoRef.current.play().catch(() => {});
+    }
+    // 이미 원격 스트림이 도착해 있으면 재연결
+    if (remoteVideoRef.current && remoteStreamRef.current) {
+      remoteVideoRef.current.srcObject = remoteStreamRef.current;
+      remoteVideoRef.current.play().catch(() => {});
+    }
+
+    // 역할별 인식 기능 초기화
+    if (role === 'deaf') {
+      initMediaPipe().catch(e => setError(`MediaPipe 로드 실패: ${e.message}`));
+    } else {
+      initSTT();
+    }
   }, [phase]); // eslint-disable-line
 
   // ── 통화 종료 ────────────────────────────────────────────
@@ -514,7 +562,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
         <View style={styles.callingContainer}>
 
           {/* 상대방 영상 (메인) */}
-          <View style={styles.remoteVideoBox}>
+          <View style={[styles.remoteVideoBox, { height: remoteVideoHeight }]}>
             {Platform.OS === 'web' && (
               <video
                 ref={remoteVideoRef as any}
