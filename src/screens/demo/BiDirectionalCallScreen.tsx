@@ -78,6 +78,8 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
 
   // MediaPipe 로딩 상태 (농인 전용)
   const [mpLoaded, setMpLoaded] = useState(false);
+  // TTS 재생 중 여부 (청인 화면 오버레이 표시용)
+  const [isSpeaking, setIsSpeaking] = useState(false);
   // 원격 스트림 — state로 관리해야 도착 즉시 useEffect 재실행으로 video에 연결
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
 
@@ -85,8 +87,9 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const localVideoRef   = useRef<HTMLVideoElement>(null);
   const remoteVideoRef  = useRef<HTMLVideoElement>(null);
   const canvasRef       = useRef<HTMLCanvasElement>(null);
-  const localStreamRef  = useRef<MediaStream | null>(null);   // 스트림 별도 보존
-  const remoteStreamRef = useRef<MediaStream | null>(null);   // 원격 스트림 보존
+  const localStreamRef  = useRef<MediaStream | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
+  const subClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null); // 자막 timeout 단일 관리
   const socketRef       = useRef<Socket | null>(null);
   const pcRef           = useRef<RTCPeerConnection | null>(null);
   const dcRef           = useRef<RTCDataChannel | null>(null);
@@ -147,25 +150,32 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     try {
       const msg = JSON.parse(raw) as { type: 'gesture'|'speech'; text: string };
       const text = msg.text;
+      if (!text?.trim()) return;
+
+      // 자막: 이전 timeout 취소 후 새로 시작 → 연속 메시지 때 조기 삭제 방지
+      if (subClearTimerRef.current) clearTimeout(subClearTimerRef.current);
       setCurrentSub(text);
+      subClearTimerRef.current = setTimeout(() => setCurrentSub(''), 5000);
+
       setMessages(prev => [...prev, { text, from: 'partner', ts: Date.now() }]);
-      // 청인이 받으면 TTS 즉시 재생
-      // 이전 발화를 무조건 cancel → requestAnimationFrame(~16ms)으로 새 발화 시작
-      // setTimeout(100)은 큐 누적 유발 → rAF로 최소 지연
+
+      // 청인: 수어 자막 수신 시 TTS 즉시 재생 + isSpeaking 연동
       if (role === 'hearing' && Platform.OS === 'web' && 'speechSynthesis' in window) {
         const synth = window.speechSynthesis;
-        synth.cancel();                        // 큐 전체 즉시 비움
+        synth.cancel();  // 이전 발화 즉시 중단, 큐 비움
         const utt = new SpeechSynthesisUtterance(text);
-        utt.lang = 'ko-KR';
-        utt.rate = 1.15;                       // 약간 빠르게 — 자연스러운 실시간 느낌
-        utt.pitch = 1.0;
-        utt.volume = 1.0;
-        requestAnimationFrame(() => {          // cancel 처리 후 한 프레임 뒤 즉시 발화
+        utt.lang    = 'ko-KR';
+        utt.rate    = 1.15;
+        utt.pitch   = 1.0;
+        utt.volume  = 1.0;
+        utt.onstart = () => setIsSpeaking(true);
+        utt.onend   = () => setIsSpeaking(false);
+        utt.onerror = () => setIsSpeaking(false);
+        requestAnimationFrame(() => {
           if (synth.paused) synth.resume();
           synth.speak(utt);
         });
       }
-      setTimeout(() => setCurrentSub(''), 4000);
     } catch { /* 무시 */ }
   }, [role]);
 
@@ -656,10 +666,18 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                     <Text style={styles.videoPlaceholderText}>⏳ 연결 중...</Text>
                   </View>
                 )}
-                {/* 받은 자막 (하단) */}
+                {/* 상대방 영상 위 자막 오버레이 */}
                 {!!currentSub && (
                   <View style={styles.splitIncomingSub}>
                     <Text style={styles.splitIncomingSubText}>{currentSub}</Text>
+                    {/* 청인: TTS 재생 중 표시 */}
+                    {role === 'hearing' && isSpeaking && (
+                      <Text style={styles.ttsActiveText}>🔊 음성 변환 중...</Text>
+                    )}
+                    {/* 농인: 청인 음성 수신 안내 */}
+                    {role === 'deaf' && (
+                      <Text style={styles.ttsActiveText}>💬 청인 음성</Text>
+                    )}
                   </View>
                 )}
               </View>
@@ -682,6 +700,9 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
               {!!currentSub && (
                 <View style={styles.incomingSub}>
                   <Text style={styles.incomingSubText}>{currentSub}</Text>
+                  {role === 'hearing' && isSpeaking && (
+                    <Text style={styles.ttsActiveText}>🔊 음성 변환 중...</Text>
+                  )}
                 </View>
               )}
               <View style={styles.localPip}>
@@ -905,21 +926,31 @@ const styles = StyleSheet.create({
   },
   splitIncomingSub: {
     position: 'absolute',
-    bottom: 12,
-    left: 12,
-    right: 12,
-    backgroundColor: 'rgba(0,0,0,0.82)',
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderWidth: 2,
-    borderColor: '#00FF88',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: 'rgba(0,0,0,0.88)',
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    borderTopWidth: 3,
+    borderTopColor: '#00FF88',
   },
   splitIncomingSubText: {
     color: '#FFFFFF',
-    fontSize: fonts.sizes.xl,
-    fontWeight: fonts.weights.bold,
+    fontSize: 30,
+    fontWeight: '900' as any,
     textAlign: 'center',
+    lineHeight: 40,
+    textShadowColor: 'rgba(0,0,0,0.8)',
+    textShadowOffset: { width: 1, height: 1 },
+    textShadowRadius: 4,
+  },
+  ttsActiveText: {
+    color: '#00FF88',
+    fontSize: fonts.sizes.sm,
+    textAlign: 'center',
+    marginTop: 6,
+    fontWeight: fonts.weights.medium,
   },
 
   // 모바일 PiP
@@ -929,11 +960,14 @@ const styles = StyleSheet.create({
   },
   videoPlaceholderText: { color: '#AAA', fontSize: fonts.sizes.xl },
   incomingSub: {
-    position: 'absolute', top: 16, left: 16, right: 16,
-    backgroundColor: 'rgba(0,0,0,0.80)', borderRadius: 10, padding: spacing.md,
-    borderWidth: 2, borderColor: '#00FF88',
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    backgroundColor: 'rgba(0,0,0,0.88)', paddingVertical: 14, paddingHorizontal: 16,
+    borderTopWidth: 3, borderTopColor: '#00FF88',
   },
-  incomingSubText: { color: '#FFFFFF', fontSize: fonts.sizes['2xl'], fontWeight: fonts.weights.bold, textAlign: 'center' },
+  incomingSubText: {
+    color: '#FFFFFF', fontSize: 26, fontWeight: '900' as any,
+    textAlign: 'center', lineHeight: 36,
+  },
   localPip: {
     position: 'absolute', bottom: 16, right: 16,
     width: 100, height: 140, borderRadius: 10, overflow: 'hidden',
