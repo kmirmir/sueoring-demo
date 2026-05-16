@@ -74,6 +74,8 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
 
   // MediaPipe 로딩 상태 (농인 전용)
   const [mpLoaded, setMpLoaded] = useState(false);
+  // 원격 스트림 — state로 관리해야 도착 즉시 useEffect 재실행으로 video에 연결
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
 
   // Refs
   const localVideoRef   = useRef<HTMLVideoElement>(null);
@@ -172,14 +174,12 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       if (candidate) socketRef.current?.emit('room-ice', { roomCode: code, candidate });
     };
 
-    // 원격 영상 스트림 수신 → ref에 보존 후 video에 연결
-    pc.ontrack = ({ streams }) => {
-      if (!streams[0]) return;
-      remoteStreamRef.current = streams[0];
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = streams[0];
-        remoteVideoRef.current.play().catch(() => {});
-      }
+    // 원격 영상 스트림 수신
+    // streams[0]이 비어있는 브라우저 대응: 개별 track으로 MediaStream 직접 생성
+    pc.ontrack = (event) => {
+      const stream = event.streams[0] ?? new MediaStream([event.track]);
+      remoteStreamRef.current = stream;
+      setRemoteStream(stream);  // state 변경 → useEffect 재실행 → video 연결
     };
 
     // DataChannel 수신 (비창시자)
@@ -424,28 +424,36 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     } catch { /* 에러는 startCamera에서 처리 */ }
   };
 
-  // calling 단계 진입 시: 로컬·원격 스트림을 새 video 요소에 재연결
+  // calling 단계 진입 시: 로컬 PiP 스트림 재연결 + 역할별 기능 초기화
   useEffect(() => {
     if (phase !== 'calling') return;
 
-    // 로컬 PiP 비디오 재연결 (waiting → calling 단계 전환 시 DOM 교체로 srcObject 끊김)
-    if (localVideoRef.current && localStreamRef.current) {
-      localVideoRef.current.srcObject = localStreamRef.current;
-      localVideoRef.current.play().catch(() => {});
-    }
-    // 이미 원격 스트림이 도착해 있으면 재연결
-    if (remoteVideoRef.current && remoteStreamRef.current) {
-      remoteVideoRef.current.srcObject = remoteStreamRef.current;
-      remoteVideoRef.current.play().catch(() => {});
-    }
+    // requestAnimationFrame: DOM이 완전히 그려진 뒤 video에 스트림 연결
+    requestAnimationFrame(() => {
+      if (localVideoRef.current && localStreamRef.current) {
+        localVideoRef.current.srcObject = localStreamRef.current;
+        localVideoRef.current.play().catch(() => {});
+      }
+    });
 
-    // 역할별 인식 기능 초기화
     if (role === 'deaf') {
       initMediaPipe().catch(e => setError(`MediaPipe 로드 실패: ${e.message}`));
     } else {
       initSTT();
     }
   }, [phase]); // eslint-disable-line
+
+  // 원격 스트림 도착 시 즉시 video에 연결
+  // (ontrack 타이밍이 phase useEffect 이후일 수 있으므로 별도 effect 필수)
+  useEffect(() => {
+    if (!remoteStream) return;
+    requestAnimationFrame(() => {
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = remoteStream;
+        remoteVideoRef.current.play().catch(() => {});
+      }
+    });
+  }, [remoteStream]);
 
   // ── 통화 종료 ────────────────────────────────────────────
   const handleEndCall = () => {
