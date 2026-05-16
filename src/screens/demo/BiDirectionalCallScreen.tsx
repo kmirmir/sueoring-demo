@@ -149,16 +149,21 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       const text = msg.text;
       setCurrentSub(text);
       setMessages(prev => [...prev, { text, from: 'partner', ts: Date.now() }]);
-      // 청인이 받으면 TTS 재생
-      // Chrome WebRTC 세션 중 cancel()이 autoplay 플래그를 리셋하는 버그 → cancel 제거
-      // paused 상태일 경우 resume() 먼저 호출
+      // 청인이 받으면 TTS 즉시 재생
+      // 이전 발화를 무조건 cancel → requestAnimationFrame(~16ms)으로 새 발화 시작
+      // setTimeout(100)은 큐 누적 유발 → rAF로 최소 지연
       if (role === 'hearing' && Platform.OS === 'web' && 'speechSynthesis' in window) {
         const synth = window.speechSynthesis;
-        if (synth.speaking) synth.cancel();
+        synth.cancel();                        // 큐 전체 즉시 비움
         const utt = new SpeechSynthesisUtterance(text);
-        utt.lang = 'ko-KR'; utt.rate = 1.0; utt.pitch = 1.0; utt.volume = 1.0;
-        if (synth.paused) synth.resume();
-        setTimeout(() => synth.speak(utt), 100);
+        utt.lang = 'ko-KR';
+        utt.rate = 1.15;                       // 약간 빠르게 — 자연스러운 실시간 느낌
+        utt.pitch = 1.0;
+        utt.volume = 1.0;
+        requestAnimationFrame(() => {          // cancel 처리 후 한 프레임 뒤 즉시 발화
+          if (synth.paused) synth.resume();
+          synth.speak(utt);
+        });
       }
       setTimeout(() => setCurrentSub(''), 4000);
     } catch { /* 무시 */ }
