@@ -53,8 +53,12 @@ interface Props { onBack: () => void; }
 
 // ─────────────────────────────────────────────────────────
 export default function BiDirectionalCallScreen({ onBack }: Props) {
-  const { height: screenHeight } = useWindowDimensions();
-  // 헤더(~56px) + 하단 패널(220px) 제외한 원격 영상 높이
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+  const isMobileWeb = Platform.OS === 'web' && (
+    /Android|iPhone|iPad|iPod/i.test(typeof navigator !== 'undefined' ? navigator.userAgent : '') ||
+    (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0 && screenWidth < 1024)
+  );
+  // 헤더(~56px) + 하단 패널(220px) 제외한 영상 영역 높이
   const remoteVideoHeight = Math.max(screenHeight - 56 - 220, 200);
 
   // 단계 & 역할
@@ -569,45 +573,107 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       {phase === 'calling' && (
         <View style={styles.callingContainer}>
 
-          {/* 상대방 영상 (메인) */}
-          <View style={[styles.remoteVideoBox, { height: remoteVideoHeight }]}>
-            {Platform.OS === 'web' && (
-              <video
-                ref={remoteVideoRef as any}
-                autoPlay playsInline
-                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-              />
-            )}
-            {connStatus !== 'connected' && (
-              <View style={styles.videoPlaceholder}>
-                <Text style={styles.videoPlaceholderText}>⏳ 연결 중...</Text>
-              </View>
-            )}
+          {/* ── PC: 5:5 좌우 분할 ── */}
+          {!isMobileWeb ? (
+            <View style={[styles.splitRow, { height: remoteVideoHeight }]}>
 
-            {/* 받은 자막 (상단 오버레이) */}
-            {!!currentSub && (
-              <View style={styles.incomingSub}>
-                <Text style={styles.incomingSubText}>{currentSub}</Text>
+              {/* 내 영상 (좌측 50%) */}
+              <View style={styles.splitPanel}>
+                <View style={styles.splitLabelBox}>
+                  <Text style={styles.splitLabelText}>
+                    {role === 'deaf' ? '🤟 나 (농인 · 수어 송신)' : '🗣️ 나 (청인 · 음성 송신)'}
+                  </Text>
+                </View>
+                {Platform.OS === 'web' && (
+                  <>
+                    <video
+                      ref={localVideoRef as any}
+                      autoPlay playsInline muted
+                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    />
+                    <canvas
+                      ref={canvasRef as any}
+                      style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}
+                    />
+                  </>
+                )}
+                {/* 내 송신 자막 (하단) */}
+                {(gestureLabel || sttLive) && (
+                  <View style={styles.splitMySub}>
+                    <Text style={styles.splitMySubText} numberOfLines={1}>
+                      {role === 'deaf' ? `🤟 ${gestureLabel}` : `🗣️ ${sttLive}`}
+                    </Text>
+                  </View>
+                )}
               </View>
-            )}
 
-            {/* 내 영상 (PiP) */}
-            <View style={styles.localPip}>
-              {Platform.OS === 'web' && (
-                <>
+              {/* 구분선 */}
+              <View style={styles.splitDivider} />
+
+              {/* 상대방 영상 (우측 50%) */}
+              <View style={styles.splitPanel}>
+                <View style={styles.splitLabelBox}>
+                  <Text style={styles.splitLabelText}>
+                    {role === 'deaf' ? '👤 상대방 (청인 · 자막 수신)' : '🤟 상대방 (농인 · 수어 송신)'}
+                  </Text>
+                </View>
+                {Platform.OS === 'web' && (
                   <video
-                    ref={localVideoRef as any}
-                    autoPlay playsInline muted
-                    style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8 }}
+                    ref={remoteVideoRef as any}
+                    autoPlay playsInline
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                   />
-                  <canvas
-                    ref={canvasRef as any}
-                    style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', borderRadius: 8 }}
-                  />
-                </>
-              )}
+                )}
+                {connStatus !== 'connected' && (
+                  <View style={styles.videoPlaceholder}>
+                    <Text style={styles.videoPlaceholderText}>⏳ 연결 중...</Text>
+                  </View>
+                )}
+                {/* 받은 자막 (하단) */}
+                {!!currentSub && (
+                  <View style={styles.splitIncomingSub}>
+                    <Text style={styles.splitIncomingSubText}>{currentSub}</Text>
+                  </View>
+                )}
+              </View>
             </View>
-          </View>
+          ) : (
+            /* ── 모바일: PiP 레이아웃 유지 ── */
+            <View style={[styles.remoteVideoBox, { height: remoteVideoHeight }]}>
+              {Platform.OS === 'web' && (
+                <video
+                  ref={remoteVideoRef as any}
+                  autoPlay playsInline
+                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                />
+              )}
+              {connStatus !== 'connected' && (
+                <View style={styles.videoPlaceholder}>
+                  <Text style={styles.videoPlaceholderText}>⏳ 연결 중...</Text>
+                </View>
+              )}
+              {!!currentSub && (
+                <View style={styles.incomingSub}>
+                  <Text style={styles.incomingSubText}>{currentSub}</Text>
+                </View>
+              )}
+              <View style={styles.localPip}>
+                {Platform.OS === 'web' && (
+                  <>
+                    <video
+                      ref={localVideoRef as any}
+                      autoPlay playsInline muted
+                      style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8 }}
+                    />
+                    <canvas
+                      ref={canvasRef as any}
+                      style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', borderRadius: 8 }}
+                    />
+                  </>
+                )}
+              </View>
+            </View>
+          )}
 
           {/* 하단 패널 */}
           <View style={styles.bottomPanel}>
@@ -759,6 +825,77 @@ const styles = StyleSheet.create({
 
   // ── Calling ──
   callingContainer: { flex: 1 },
+
+  // PC 5:5 분할
+  splitRow: {
+    flexDirection: 'row',
+    backgroundColor: '#000',
+  },
+  splitPanel: {
+    flex: 1,
+    position: 'relative',
+    overflow: 'hidden',
+    backgroundColor: '#000',
+  },
+  splitDivider: {
+    width: 2,
+    backgroundColor: '#2D3561',
+  },
+  splitLabelBox: {
+    position: 'absolute',
+    top: 10,
+    left: 10,
+    zIndex: 10,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#2D3561',
+  },
+  splitLabelText: {
+    color: '#E2E8F0',
+    fontSize: fonts.sizes.sm,
+    fontWeight: fonts.weights.medium,
+  },
+  splitMySub: {
+    position: 'absolute',
+    bottom: 12,
+    left: 12,
+    right: 12,
+    backgroundColor: 'rgba(37,99,235,0.90)',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: '#00FF88',
+  },
+  splitMySubText: {
+    color: '#FFFFFF',
+    fontSize: fonts.sizes.lg,
+    fontWeight: fonts.weights.bold,
+    textAlign: 'center',
+  },
+  splitIncomingSub: {
+    position: 'absolute',
+    bottom: 12,
+    left: 12,
+    right: 12,
+    backgroundColor: 'rgba(0,0,0,0.82)',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderWidth: 2,
+    borderColor: '#00FF88',
+  },
+  splitIncomingSubText: {
+    color: '#FFFFFF',
+    fontSize: fonts.sizes.xl,
+    fontWeight: fonts.weights.bold,
+    textAlign: 'center',
+  },
+
+  // 모바일 PiP
   remoteVideoBox: { flex: 1, backgroundColor: '#000', position: 'relative' },
   videoPlaceholder: {
     ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center', backgroundColor: '#111',
