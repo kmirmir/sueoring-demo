@@ -783,7 +783,7 @@ export default function RealSignLanguageScreen({ onBack }: RealSignLanguageScree
           maxY = Math.max(maxY, landmark.y);
         });
 
-        const { x: boxX, y: boxY } = toCanvasPx(minX, minY);
+        const { x: boxX, y: boxY } = toCanvasPx(maxX, minY); // x 반전 후 maxX가 시각적 좌측
         const boxWidth = (maxX - minX) * videoW * coverScale;
         const boxHeight = (maxY - minY) * videoH * coverScale;
 
