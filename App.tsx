@@ -18,8 +18,9 @@ import GestureLearningScreen from './src/screens/learning/GestureLearningScreen'
 import SignDictionaryScreen from './src/screens/dictionary/SignDictionaryScreen';
 import ChatLobbyScreen from './src/screens/chat/ChatLobbyScreen';
 import ChatRoomScreen from './src/screens/chat/ChatRoomScreen';
+import CCTVMonitorScreen from './src/screens/cctv/CCTVMonitorScreen';
 
-type Screen = 'home' | 'login' | 'otp' | 'userType' | 'mainApp' | 'incomingCall' | 'outgoingCall' | 'activeCall' | 'signLanguageDemo' | 'realSignLanguage' | 'gestureLearning' | 'signDictionary' | 'chatLobby' | 'chatRoom';
+type Screen = 'home' | 'login' | 'otp' | 'userType' | 'mainApp' | 'incomingCall' | 'outgoingCall' | 'activeCall' | 'signLanguageDemo' | 'realSignLanguage' | 'gestureLearning' | 'signDictionary' | 'chatLobby' | 'chatRoom' | 'cctv';
 type UserType = 'deaf' | 'hearing' | null;
 
 export default function App() {
@@ -110,6 +111,10 @@ export default function App() {
     setCurrentScreen('chatLobby');
   };
 
+  const handleCCTV = () => {
+    setCurrentScreen('cctv');
+  };
+
   const handleEnterChatRoom = (code: string, role: 'creator' | 'joiner', selectedType: 'deaf' | 'hearing') => {
     setChatRoomCode(code);
     setChatRoomRole(role);
@@ -196,6 +201,9 @@ export default function App() {
         />
       );
 
+    case 'cctv':
+      return <CCTVMonitorScreen onBack={() => setCurrentScreen('home')} />;
+
     case 'home':
     case 'mainApp':
       return (
@@ -207,6 +215,7 @@ export default function App() {
           onGestureLearning={handleGestureLearning}
           onSignDictionary={handleSignDictionary}
           onChatRoom={handleChatLobby}
+          onCCTV={handleCCTV}
         />
       );
 

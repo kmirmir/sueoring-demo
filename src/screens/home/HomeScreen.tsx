@@ -14,9 +14,10 @@ interface HomeScreenProps {
   onGestureLearning?: () => void;
   onSignDictionary?: () => void;
   onChatRoom?: () => void;
+  onCCTV?: () => void;
 }
 
-export default function HomeScreen({ onTestIncomingCall, onTestOutgoingCall, onSignLanguageDemo, onRealSignLanguage, onGestureLearning, onSignDictionary, onChatRoom }: HomeScreenProps = {}) {
+export default function HomeScreen({ onTestIncomingCall, onTestOutgoingCall, onSignLanguageDemo, onRealSignLanguage, onGestureLearning, onSignDictionary, onChatRoom, onCCTV }: HomeScreenProps = {}) {
   return (
     <View style={styles.container}>
       <StatusBar style="auto" />
@@ -191,6 +192,12 @@ export default function HomeScreen({ onTestIncomingCall, onTestOutgoingCall, onS
             {onChatRoom && (
               <TouchableOpacity style={[styles.demoButton, styles.demoButton_chat]} onPress={onChatRoom}>
                 <Text style={styles.demoButtonText}>💬 1:1 실시간 대화방</Text>
+              </TouchableOpacity>
+            )}
+
+            {onCCTV && (
+              <TouchableOpacity style={[styles.demoButton, styles.demoButton_cctv]} onPress={onCCTV}>
+                <Text style={styles.demoButtonText}>📹 CCTV 위험관제</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -386,6 +393,9 @@ const styles = StyleSheet.create({
   },
   demoButton_chat: {
     backgroundColor: '#059669',
+  },
+  demoButton_cctv: {
+    backgroundColor: '#7c3aed',
   },
   demoButtonText: {
     fontSize: fonts.sizes.base,
