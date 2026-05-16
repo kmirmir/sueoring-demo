@@ -601,7 +601,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
               <video
                 ref={localVideoRef as any}
                 autoPlay playsInline muted
-                style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 12 }}
+                style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 12, transform: 'scaleX(-1)' }}
               />
             )}
           </View>
@@ -648,11 +648,11 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                     <video
                       ref={localVideoRef as any}
                       autoPlay playsInline muted
-                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                      style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }}
                     />
                     <canvas
                       ref={canvasRef as any}
-                      style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}
+                      style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', transform: 'scaleX(-1)' }}
                     />
                   </>
                 )}
@@ -733,11 +733,11 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                     <video
                       ref={localVideoRef as any}
                       autoPlay playsInline muted
-                      style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8 }}
+                      style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8, transform: 'scaleX(-1)' }}
                     />
                     <canvas
                       ref={canvasRef as any}
-                      style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', borderRadius: 8 }}
+                      style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', borderRadius: 8, transform: 'scaleX(-1)' }}
                     />
                   </>
                 )}

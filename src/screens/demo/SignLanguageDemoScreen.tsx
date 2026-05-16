@@ -362,11 +362,11 @@ export default function SignLanguageDemoScreen({ onBack }: SignLanguageDemoScree
                   <video
                     ref={videoRef as any}
                     autoPlay playsInline muted
-                    style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+                    style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }}
                   />
                   <canvas
                     ref={canvasRef as any}
-                    style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}
+                    style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', transform: 'scaleX(-1)' }}
                   />
                 </>
               )}

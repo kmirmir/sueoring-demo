@@ -1261,6 +1261,7 @@ export default function RealSignLanguageScreen({ onBack }: RealSignLanguageScree
                       width: '100%',
                       height: '100%',
                       objectFit: 'cover',
+                      transform: 'scaleX(-1)',
                     }}
                   />
                   <canvas
@@ -1271,6 +1272,7 @@ export default function RealSignLanguageScreen({ onBack }: RealSignLanguageScree
                       left: 0,
                       width: '100%',
                       height: '100%',
+                      transform: 'scaleX(-1)',
                     }}
                   />
                 </>
