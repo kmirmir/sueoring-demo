@@ -174,7 +174,12 @@ export default function SignLanguageDemoScreen({ onBack }: SignLanguageDemoScree
 
     ctx.save();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // 영상 미러 반전 — ctx 수준에서 좌우 flip (video CSS scaleX(-1)와 동일 효과)
+    ctx.save();
+    ctx.translate(canvas.width, 0);
+    ctx.scale(-1, 1);
     ctx.drawImage(results.image, ox, oy, vw * scale, vh * scale);
+    ctx.restore();
 
     if (!results.multiHandLandmarks?.length) {
       setHandDetected(false);
