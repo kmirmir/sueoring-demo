@@ -7,15 +7,14 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const isLargeScreen = SCREEN_WIDTH > 768;
 
 interface HomeScreenProps {
-  onTestIncomingCall?: () => void;
-  onTestOutgoingCall?: () => void;
   onSignLanguageDemo?: () => void;
   onRealSignLanguage?: () => void;
+  onBiDirectionalCall?: () => void;
   onGestureLearning?: () => void;
   onSignDictionary?: () => void;
 }
 
-export default function HomeScreen({ onTestIncomingCall, onTestOutgoingCall, onSignLanguageDemo, onRealSignLanguage, onGestureLearning, onSignDictionary }: HomeScreenProps = {}) {
+export default function HomeScreen({ onSignLanguageDemo, onRealSignLanguage, onBiDirectionalCall, onGestureLearning, onSignDictionary }: HomeScreenProps = {}) {
   return (
     <View style={styles.container}>
       <StatusBar style="auto" />
@@ -159,31 +158,29 @@ export default function HomeScreen({ onTestIncomingCall, onTestOutgoingCall, onS
           </View>
         )}
 
-        {/* Demo Test Buttons */}
-        {(onTestIncomingCall || onTestOutgoingCall || onSignLanguageDemo || onRealSignLanguage) && (
+        {/* Demo Menu */}
+        {(onRealSignLanguage || onBiDirectionalCall || onSignLanguageDemo) && (
           <View style={styles.demoSection}>
-            <Text style={styles.demoTitle}>🎬 데모 테스트</Text>
+            <Text style={styles.demoTitle}>🎬 수어링 Demo 시연 메뉴</Text>
 
             {onRealSignLanguage && (
               <TouchableOpacity style={[styles.demoButton, styles.demoButton_highlight]} onPress={onRealSignLanguage}>
-                <Text style={styles.demoButtonText}>🔴 실시간 수어 인식 (MediaPipe)</Text>
+                <Text style={styles.demoButtonText}>🤟 실시간 수어 인식 (일방향 커뮤니케이션)</Text>
+                <Text style={styles.demoButtonSub}>수어 모션 및 성능 체크</Text>
+              </TouchableOpacity>
+            )}
+
+            {onBiDirectionalCall && (
+              <TouchableOpacity style={[styles.demoButton, styles.demoButton_webrtc]} onPress={onBiDirectionalCall}>
+                <Text style={styles.demoButtonText}>📹 실시간 수어 인식 (양방향 커뮤니케이션)</Text>
+                <Text style={styles.demoButtonSub}>수어 ↔ 음성 WebRTC 영상통화</Text>
               </TouchableOpacity>
             )}
 
             {onSignLanguageDemo && (
               <TouchableOpacity style={[styles.demoButton, styles.demoButton_primary]} onPress={onSignLanguageDemo}>
-                <Text style={styles.demoButtonText}>🤟 수어 인식 시뮬레이션</Text>
-              </TouchableOpacity>
-            )}
-
-            {onTestIncomingCall && (
-              <TouchableOpacity style={styles.demoButton} onPress={onTestIncomingCall}>
-                <Text style={styles.demoButtonText}>📞 수신 통화 화면</Text>
-              </TouchableOpacity>
-            )}
-            {onTestOutgoingCall && (
-              <TouchableOpacity style={styles.demoButton} onPress={onTestOutgoingCall}>
-                <Text style={styles.demoButtonText}>📱 발신 통화 화면</Text>
+                <Text style={styles.demoButtonText}>🖥️ 실시간 수어 인식 (가상 Demo 시연)</Text>
+                <Text style={styles.demoButtonSub}>실제 수어 인식 → 가상 청인 자막·음성 전달</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -377,10 +374,18 @@ const styles = StyleSheet.create({
   demoButton_highlight: {
     backgroundColor: colors.error.main,
   },
+  demoButton_webrtc: {
+    backgroundColor: '#0D7A3E',
+  },
   demoButtonText: {
     fontSize: fonts.sizes.base,
     fontWeight: fonts.weights.semibold,
     color: colors.primary.contrast,
+  },
+  demoButtonSub: {
+    fontSize: fonts.sizes.sm,
+    color: 'rgba(255,255,255,0.75)',
+    marginTop: 3,
   },
   learningSection: {
     paddingHorizontal: spacing.lg,

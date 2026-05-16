@@ -65,7 +65,11 @@ const SHAKE_DIRECTION_CHANGES_MIN = 2;  // 방향 전환 최소 횟수 — 3→2
 const SHAKE_DIRECTION_DELTA_MIN = 0.003;// 방향전환 카운트 시 무시할 미세 흔들림 — 0.005→0.003
 const MAX_MISSED_FRAMES_BEFORE_CLEAR = 5; // 손이 N프레임 연속 안 보일 때만 히스토리 비움
 
-export default function RealSignLanguageScreen() {
+interface RealSignLanguageScreenProps {
+  onBack?: () => void;
+}
+
+export default function RealSignLanguageScreen({ onBack }: RealSignLanguageScreenProps = {}) {
   const { width: screenWidth } = useWindowDimensions();
 
   // User-Agent + 터치 + 화면 너비 조합으로 모바일 판별 (width 단독보다 정확)
@@ -1171,7 +1175,7 @@ export default function RealSignLanguageScreen() {
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.backButton}
-          onPress={() => window.history.back()}
+          onPress={() => { if (onBack) onBack(); else window.history.back(); }}
         >
           <Text style={styles.backButtonText}>← 홈으로</Text>
         </TouchableOpacity>

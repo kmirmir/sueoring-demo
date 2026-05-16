@@ -14,10 +14,11 @@ import OutgoingCallScreen from './src/screens/call/OutgoingCallScreen';
 import CallScreen from './src/screens/call/CallScreen';
 import SignLanguageDemoScreen from './src/screens/demo/SignLanguageDemoScreen';
 import RealSignLanguageScreen from './src/screens/demo/RealSignLanguageScreen';
+import BiDirectionalCallScreen from './src/screens/demo/BiDirectionalCallScreen';
 import GestureLearningScreen from './src/screens/learning/GestureLearningScreen';
 import SignDictionaryScreen from './src/screens/dictionary/SignDictionaryScreen';
 
-type Screen = 'home' | 'login' | 'otp' | 'userType' | 'mainApp' | 'incomingCall' | 'outgoingCall' | 'activeCall' | 'signLanguageDemo' | 'realSignLanguage' | 'gestureLearning' | 'signDictionary';
+type Screen = 'home' | 'login' | 'otp' | 'userType' | 'mainApp' | 'incomingCall' | 'outgoingCall' | 'activeCall' | 'signLanguageDemo' | 'realSignLanguage' | 'biDirectionalCall' | 'gestureLearning' | 'signDictionary';
 type UserType = 'deaf' | 'hearing' | null;
 
 export default function App() {
@@ -56,15 +57,6 @@ export default function App() {
     }, 100);
   };
 
-  // Call handlers
-  const handleIncomingCall = () => {
-    setCurrentScreen('incomingCall');
-  };
-
-  const handleOutgoingCall = () => {
-    setCurrentScreen('outgoingCall');
-  };
-
   const handleAcceptCall = () => {
     setCurrentScreen('activeCall');
     Alert.alert('통화 연결', '통화가 연결되었습니다');
@@ -91,6 +83,10 @@ export default function App() {
 
   const handleRealSignLanguage = () => {
     setCurrentScreen('realSignLanguage');
+  };
+
+  const handleBiDirectionalCall = () => {
+    setCurrentScreen('biDirectionalCall');
   };
 
   const handleGestureLearning = () => {
@@ -150,10 +146,13 @@ export default function App() {
       );
 
     case 'signLanguageDemo':
-      return <SignLanguageDemoScreen />;
+      return <SignLanguageDemoScreen onBack={() => setCurrentScreen('home')} />;
 
     case 'realSignLanguage':
-      return <RealSignLanguageScreen />;
+      return <RealSignLanguageScreen onBack={() => setCurrentScreen('home')} />;
+
+    case 'biDirectionalCall':
+      return <BiDirectionalCallScreen onBack={() => setCurrentScreen('home')} />;
 
     case 'gestureLearning':
       return <GestureLearningScreen onBack={() => setCurrentScreen('home')} />;
@@ -165,10 +164,9 @@ export default function App() {
     case 'mainApp':
       return (
         <HomeScreen
-          onTestIncomingCall={handleIncomingCall}
-          onTestOutgoingCall={handleOutgoingCall}
           onSignLanguageDemo={handleSignLanguageDemo}
           onRealSignLanguage={handleRealSignLanguage}
+          onBiDirectionalCall={handleBiDirectionalCall}
           onGestureLearning={handleGestureLearning}
           onSignDictionary={handleSignDictionary}
         />

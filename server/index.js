@@ -24,6 +24,9 @@ app.use(express.json());
 const users = new Map(); // socketId -> { userId, userType, userName }
 const rooms = new Map(); // roomId -> { users: [socketId], callStarted: boolean }
 
+// 양방향 영상통화 방 코드 관리
+const codeRooms = new Map(); // roomCode -> { creator: socketId, partner: socketId|null, roles: {} }
+
 // 헬스체크 엔드포인트
 app.get('/health', (req, res) => {
   res.json({
@@ -135,6 +138,62 @@ io.on('connection', (socket) => {
     });
   });
 
+  // ── 양방향 영상통화 방 코드 기반 시그널링 ──
+
+  // 방 참가 (없으면 생성, 있으면 입장)
+  socket.on('room-join', ({ roomCode, role }) => {
+    const room = codeRooms.get(roomCode);
+    if (!room) {
+      // 방 생성 (첫 번째 참여자)
+      codeRooms.set(roomCode, { creator: socket.id, partner: null, roles: { [socket.id]: role } });
+      socket.join(`room-${roomCode}`);
+      socket.emit('room-created', { roomCode });
+      console.log(`🏠 방 생성: ${roomCode} (${socket.id})`);
+    } else if (!room.partner) {
+      // 방 입장 (두 번째 참여자) → WebRTC 협상 시작
+      room.partner = socket.id;
+      room.roles[socket.id] = role;
+      socket.join(`room-${roomCode}`);
+      // 방장(initiator)에게 먼저 알림 → offer 생성 시작
+      io.to(room.creator).emit('room-ready', { roomCode, isInitiator: true, partnerRole: role });
+      // 입장자는 offer 대기
+      socket.emit('room-ready', { roomCode, isInitiator: false, partnerRole: room.roles[room.creator] });
+      console.log(`✅ 방 입장: ${roomCode} (${socket.id}) — 통화 시작`);
+    } else {
+      socket.emit('room-full', { roomCode });
+    }
+  });
+
+  // WebRTC SDP Offer 중계
+  socket.on('room-offer', ({ roomCode, offer }) => {
+    socket.to(`room-${roomCode}`).emit('room-offer', { offer });
+  });
+
+  // WebRTC SDP Answer 중계
+  socket.on('room-answer', ({ roomCode, answer }) => {
+    socket.to(`room-${roomCode}`).emit('room-answer', { answer });
+  });
+
+  // ICE Candidate 중계
+  socket.on('room-ice', ({ roomCode, candidate }) => {
+    socket.to(`room-${roomCode}`).emit('room-ice', { candidate });
+  });
+
+  // 방 나가기
+  socket.on('room-leave', ({ roomCode }) => {
+    socket.to(`room-${roomCode}`).emit('room-partner-left');
+    socket.leave(`room-${roomCode}`);
+    const room = codeRooms.get(roomCode);
+    if (room) {
+      if (room.creator === socket.id) room.creator = null;
+      else room.partner = null;
+      if (!room.creator && !room.partner) {
+        codeRooms.delete(roomCode);
+        console.log(`🗑️  방 삭제: ${roomCode}`);
+      }
+    }
+  });
+
   // 연결 해제
   socket.on('disconnect', () => {
     console.log(`❌ 연결 해제: ${socket.id}`);
@@ -146,6 +205,19 @@ io.on('connection', (socket) => {
 
     // 방 정리 및 상대방에게 알림
     cleanupUserRooms(socket.id);
+
+    // 양방향 방 코드 방 정리
+    for (const [roomCode, room] of codeRooms.entries()) {
+      if (room.creator === socket.id || room.partner === socket.id) {
+        socket.to(`room-${roomCode}`).emit('room-partner-left');
+        if (room.creator === socket.id) room.creator = null;
+        else room.partner = null;
+        if (!room.creator && !room.partner) {
+          codeRooms.delete(roomCode);
+          console.log(`🗑️  방 삭제(disconnect): ${roomCode}`);
+        }
+      }
+    }
 
     // 사용자 목록에서 제거
     users.delete(socket.id);
