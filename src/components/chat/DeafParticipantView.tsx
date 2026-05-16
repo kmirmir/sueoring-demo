@@ -348,8 +348,8 @@ export default function DeafParticipantView({ onGestureRecognized, onStreamReady
         ? { facingMode:'user', width:{ideal:640,max:1280}, height:{ideal:480,max:720}, frameRate:{ideal:30} }
         : { width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30}, facingMode:'user' };
 
-      const stream = await navigator.mediaDevices.getUserMedia({ video:constraints, audio:false })
-        .catch(async () => navigator.mediaDevices.getUserMedia({ video:true, audio:false }));
+      const stream = await navigator.mediaDevices.getUserMedia({ video:constraints, audio:true })
+        .catch(async () => navigator.mediaDevices.getUserMedia({ video:true, audio:true }));
 
       onStreamReady?.(stream);
 

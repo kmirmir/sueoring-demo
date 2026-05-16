@@ -25,7 +25,7 @@ export default function HearingParticipantView({ onSpeechResult, onStreamReady }
     if (!SpeechRecognition) { setSttSupported(false); }
 
     let cancelled = false;
-    navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: 'user' } })
+    navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: 'user' }, audio: true })
       .then(stream => {
         if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
         streamRef.current = stream;

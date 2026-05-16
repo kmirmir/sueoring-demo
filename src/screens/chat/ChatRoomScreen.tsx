@@ -98,7 +98,7 @@ export default function ChatRoomScreen({ roomCode, userType, role, onLeave }: Ch
     try {
       const pc = createPC();
       peerConnRef.current = pc;
-      const offer = await pc.createOffer({ offerToReceiveVideo: true, offerToReceiveAudio: false });
+      const offer = await pc.createOffer({ offerToReceiveVideo: true, offerToReceiveAudio: true });
       await pc.setLocalDescription(offer);
       socketRef.current?.emit('chat-offer', { targetSocketId: partnerSocketRef.current, offer });
     } catch { setWebrtcStatus('failed'); }
