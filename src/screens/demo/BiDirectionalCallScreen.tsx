@@ -172,17 +172,23 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
         utt.onstart = () => {
           setIsSpeaking(true);
           ttsPlayingRef.current = true;
-          // TTS 재생 중 STT 일시 중단 → 스피커 음성 에코 캡처 방지
+          // TTS 재생 중 청인 마이크 뮤트
+          // → TTS 음성이 마이크로 캡처되어 WebRTC로 농인에게 전달되는 에코 차단
+          localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = false; });
+          // STT도 중단 (에코 오인식 방지)
           try { recognitionRef.current?.abort(); } catch { /* 무시 */ }
         };
         utt.onend = () => {
           setIsSpeaking(false);
           ttsPlayingRef.current = false;
-          // TTS 종료 후 STT는 onend 핸들러가 자동 재시작
+          // TTS 종료 후 마이크 다시 활성화 → 청인 목소리 농인에게 정상 전달 재개
+          localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = true; });
+          // STT는 onend 핸들러가 자동 재시작
         };
         utt.onerror = () => {
           setIsSpeaking(false);
           ttsPlayingRef.current = false;
+          localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = true; });
         };
         requestAnimationFrame(() => {
           if (synth.paused) synth.resume();
@@ -505,18 +511,12 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     requestAnimationFrame(() => {
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = remoteStream;
-
-        // 농인 화면: 청인의 WebRTC 오디오 트랙 비활성화
-        // 경로: 청인 TTS 스피커 → 청인 마이크 → WebRTC → 농인 remoteVideo → 하울링
-        if (role === 'deaf') {
-          remoteVideoRef.current.muted = true;
-          remoteStream.getAudioTracks().forEach(track => { track.enabled = false; });
-        }
-
+        // 농인 화면에서 청인 목소리(WebRTC 오디오) 정상 재생
+        // 에코 방지는 청인 마이크를 TTS 재생 중에만 뮤트하는 방식으로 처리
         remoteVideoRef.current.play().catch(() => {});
       }
     });
-  }, [remoteStream, role]);
+  }, [remoteStream]);
 
   // ── 통화 종료 ────────────────────────────────────────────
   const handleEndCall = () => {
