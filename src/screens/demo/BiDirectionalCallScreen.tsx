@@ -355,7 +355,8 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
         minX = Math.min(minX, lm.x); minY = Math.min(minY, lm.y);
         maxX = Math.max(maxX, lm.x); maxY = Math.max(maxY, lm.y);
       });
-      const bx = minX * canvas.width,  by = minY * canvas.height;
+      // scaleX(-1)은 video에만 적용 → canvas는 x 좌표를 직접 반전
+      const bx = (1 - maxX) * canvas.width,  by = minY * canvas.height;
       const bw = (maxX - minX) * canvas.width, bh = (maxY - minY) * canvas.height;
 
       ctx.strokeStyle = '#00FF88'; ctx.lineWidth = 3;
@@ -652,7 +653,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                     />
                     <canvas
                       ref={canvasRef as any}
-                      style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', transform: 'scaleX(-1)' }}
+                      style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}
                     />
                   </>
                 )}
@@ -737,7 +738,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                     />
                     <canvas
                       ref={canvasRef as any}
-                      style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', borderRadius: 8, transform: 'scaleX(-1)' }}
+                      style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', borderRadius: 8 }}
                     />
                   </>
                 )}

@@ -487,13 +487,18 @@ export default function RealSignLanguageScreen({ onBack }: RealSignLanguageScree
     const imgX = (canvas.width - videoW * coverScale) / 2;
     const imgY = (canvas.height - videoH * coverScale) / 2;
     // 정규화 좌표(0-1) → canvas 픽셀 좌표 변환 헬퍼
+    // scaleX(-1)은 video에만 적용 → canvas에서 x를 직접 반전
     const toCanvasPx = (nx: number, ny: number) => ({
-      x: nx * videoW * coverScale + imgX,
+      x: (1 - nx) * videoW * coverScale + imgX,
       y: ny * videoH * coverScale + imgY,
     });
 
-    // 비디오 그리기 (cover 변환 적용)
+    // 비디오 그리기 — context 수준에서 좌우 반전 (CSS scaleX(-1) 없이 동일 효과)
+    ctx.save();
+    ctx.translate(canvas.width, 0);
+    ctx.scale(-1, 1);
     ctx.drawImage(results.image, imgX, imgY, videoW * coverScale, videoH * coverScale);
+    ctx.restore();
 
     // 감지 품질 평가
     let qualityScore = 0;
@@ -565,7 +570,7 @@ export default function RealSignLanguageScreen({ onBack }: RealSignLanguageScree
           maxY = Math.max(maxY, lm.y);
         });
       });
-      const { x: boxX, y: boxY } = toCanvasPx(minX, minY);
+      const { x: boxX, y: boxY } = toCanvasPx(maxX, minY); // x 반전 후 maxX가 시각적 좌측
       const boxWidth = (maxX - minX) * videoW * coverScale;
       const boxHeight = (maxY - minY) * videoH * coverScale;
       ctx.strokeStyle = color;
@@ -674,7 +679,7 @@ export default function RealSignLanguageScreen({ onBack }: RealSignLanguageScree
         });
 
         const pad = 0.04;
-        const { x: bx, y: by } = toCanvasPx(Math.max(0, bMinX - pad), Math.max(0, bMinY - pad));
+        const { x: bx, y: by } = toCanvasPx(Math.min(1, bMaxX + pad), Math.max(0, bMinY - pad)); // x 반전 후 bMaxX가 시각적 좌측
         const bw = (Math.min(1, bMaxX + pad) - Math.max(0, bMinX - pad)) * videoW * coverScale;
         const bh = (Math.min(1, bMaxY + pad) - Math.max(0, bMinY - pad)) * videoH * coverScale;
 
@@ -1272,7 +1277,6 @@ export default function RealSignLanguageScreen({ onBack }: RealSignLanguageScree
                       left: 0,
                       width: '100%',
                       height: '100%',
-                      transform: 'scaleX(-1)',
                     }}
                   />
                 </>

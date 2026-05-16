@@ -169,7 +169,8 @@ export default function SignLanguageDemoScreen({ onBack }: SignLanguageDemoScree
     const scale = Math.max(canvas.width / vw, canvas.height / vh);
     const ox = (canvas.width  - vw * scale) / 2;
     const oy = (canvas.height - vh * scale) / 2;
-    const toPx = (nx: number, ny: number) => ({ x: nx * vw * scale + ox, y: ny * vh * scale + oy });
+    // scaleX(-1)은 video에만 적용 → canvas에서 x 좌표를 직접 반전
+    const toPx = (nx: number, ny: number) => ({ x: (1 - nx) * vw * scale + ox, y: ny * vh * scale + oy });
 
     ctx.save();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -202,7 +203,7 @@ export default function SignLanguageDemoScreen({ onBack }: SignLanguageDemoScree
       minX = Math.min(minX, lm.x); minY = Math.min(minY, lm.y);
       maxX = Math.max(maxX, lm.x); maxY = Math.max(maxY, lm.y);
     });
-    const { x: bx, y: by } = toPx(minX, minY);
+    const { x: bx, y: by } = toPx(maxX, minY); // x 반전 후 maxX가 시각적 좌측
     const bw = (maxX - minX) * vw * scale;
     const bh = (maxY - minY) * vh * scale;
     ctx.strokeStyle = '#00FF88'; ctx.lineWidth = 3;
@@ -366,7 +367,7 @@ export default function SignLanguageDemoScreen({ onBack }: SignLanguageDemoScree
                   />
                   <canvas
                     ref={canvasRef as any}
-                    style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', transform: 'scaleX(-1)' }}
+                    style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}
                   />
                 </>
               )}
