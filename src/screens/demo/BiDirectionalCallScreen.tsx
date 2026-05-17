@@ -58,8 +58,8 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     /Android|iPhone|iPad|iPod/i.test(typeof navigator !== 'undefined' ? navigator.userAgent : '') ||
     (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0 && screenWidth < 1024)
   );
-  // 헤더(~56px) + 하단 패널(220px) 제외한 영상 영역 높이
-  const remoteVideoHeight = Math.max(screenHeight - 56 - 220, 200);
+  // 헤더(~56px) + 하단 패널(150px) 제외한 영상 영역 높이
+  const remoteVideoHeight = Math.max(screenHeight - 56 - 150, 200);
 
   // 단계 & 역할
   const [phase, setPhase]           = useState<Phase>('lobby');
@@ -163,8 +163,8 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
 
       setMessages(prev => [...prev, { text, from: 'partner', ts: Date.now() }]);
 
-      // 청인: 수어 자막 수신 시 OpenAI TTS 재생
-      if (role === 'hearing' && Platform.OS === 'web') {
+      // 양측 모두 TTS 재생: 농인은 주변인이 들을 수 있게, 청인은 수어 내용을 음성으로
+      if (Platform.OS === 'web') {
         playOpenAITTS(text);
       }
     } catch { /* 무시 */ }
@@ -279,7 +279,8 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
-        audio: true,
+        // 에코캔슬레이션·노이즈억제 명시적 활성화 → TTS 하울링 하드웨어 수준 차단
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       localStreamRef.current = stream;   // 별도 ref에 보존
       if (localVideoRef.current) {
@@ -401,8 +402,11 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
         currentAudioRef.current = null;
         setIsSpeaking(false);
         ttsPlayingRef.current = false;
-        localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = true; });
-        try { mediaRecorderRef.current?.resume(); } catch { /* 무시 */ }
+        // 500ms 지연 후 마이크 재활성화 — TTS 잔향이 마이크로 유입되는 현상 방지
+        setTimeout(() => {
+          localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = true; });
+          try { mediaRecorderRef.current?.resume(); } catch { /* 무시 */ }
+        }, 500);
       };
       audio.onended = onFinish;
       audio.onerror = onFinish;
@@ -667,14 +671,14 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                     />
                   </>
                 )}
-                {/* 내 송신 자막 (하단) */}
-                {(gestureLabel || sttLive) && (
-                  <View style={styles.splitMySub}>
-                    <Text style={styles.splitMySubText} numberOfLines={1}>
-                      {role === 'deaf' ? `🤟 ${gestureLabel}` : `🗣️ ${sttLive}`}
-                    </Text>
-                  </View>
-                )}
+                {/* 내 송신 상태 오버레이 (영상 위) */}
+                <View style={styles.splitMySub}>
+                  <Text style={styles.splitMySubText} numberOfLines={1}>
+                    {role === 'deaf'
+                      ? `🤟 ${gestureLabel || (mpLoaded ? '수어 인식 대기 중...' : 'AI 로딩 중...')}`
+                      : `🗣️ ${sttLive || '말하면 자동 인식됩니다...'}`}
+                  </Text>
+                </View>
               </View>
 
               {/* 구분선 */}
@@ -730,14 +734,23 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                   <Text style={styles.videoPlaceholderText}>⏳ 연결 중...</Text>
                 </View>
               )}
+              {/* 받은 자막 오버레이 (하단) */}
               {!!currentSub && (
                 <View style={styles.incomingSub}>
                   <Text style={styles.incomingSubText}>{currentSub}</Text>
-                  {role === 'hearing' && isSpeaking && (
+                  {isSpeaking && (
                     <Text style={styles.ttsActiveText}>🔊 음성 변환 중...</Text>
                   )}
                 </View>
               )}
+              {/* 내 송신 상태 오버레이 (상단) */}
+              <View style={styles.mobileMySub}>
+                <Text style={styles.mobileMySubText} numberOfLines={1}>
+                  {role === 'deaf'
+                    ? `🤟 ${gestureLabel || (mpLoaded ? '수어 인식 대기' : 'AI 로딩 중...')}`
+                    : `🗣️ ${sttLive || '말하면 자동 인식됩니다'}`}
+                </Text>
+              </View>
               <View style={styles.localPip}>
                 {Platform.OS === 'web' && (
                   <>
@@ -756,29 +769,18 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
             </View>
           )}
 
-          {/* 하단 패널 */}
+          {/* 하단 대화 기록 (내 송신 상태는 영상 오버레이로 이동) */}
           <View style={styles.bottomPanel}>
-
-            {/* 내가 보낸 현재 내용 */}
-            <View style={styles.mySubRow}>
-              {role === 'deaf' ? (
-                <Text style={styles.mySubText} numberOfLines={1}>
-                  🤟 {gestureLabel || (mpLoaded ? '수어 인식 중...' : 'MediaPipe 로딩 중...')}
-                </Text>
-              ) : (
-                <Text style={styles.mySubText} numberOfLines={1}>
-                  🗣️ {sttLive || '말하면 자막으로 전송됩니다...'}
-                </Text>
-              )}
-            </View>
-
-            {/* 대화 기록 */}
             <ScrollView style={styles.msgList} contentContainerStyle={{ paddingVertical: 4 }}>
-              {messages.map((m, i) => (
-                <View key={i} style={[styles.msgBubble, m.from === 'me' ? styles.msgMe : styles.msgPartner]}>
-                  <Text style={styles.msgText}>{m.from === 'me' ? '나' : '상대방'}: {m.text}</Text>
-                </View>
-              ))}
+              {messages.length === 0 ? (
+                <Text style={styles.msgEmpty}>대화 내용이 여기에 표시됩니다</Text>
+              ) : (
+                messages.map((m, i) => (
+                  <View key={i} style={[styles.msgBubble, m.from === 'me' ? styles.msgMe : styles.msgPartner]}>
+                    <Text style={styles.msgText}>{m.from === 'me' ? '나' : '상대방'}: {m.text}</Text>
+                  </View>
+                ))
+              )}
               <View ref={messagesEndRef as any} />
             </ScrollView>
           </View>
@@ -1006,12 +1008,16 @@ const styles = StyleSheet.create({
     width: 100, height: 140, borderRadius: 10, overflow: 'hidden',
     borderWidth: 2, borderColor: '#2D3561', backgroundColor: '#000',
   },
-  bottomPanel: { height: 220, backgroundColor: '#1A1F3A', padding: spacing.md },
-  mySubRow: {
-    backgroundColor: '#252B48', borderRadius: 8, padding: spacing.md, marginBottom: spacing.sm,
-  },
-  mySubText: { color: '#00FF88', fontSize: fonts.sizes.base, fontWeight: fonts.weights.medium },
+  bottomPanel: { height: 150, backgroundColor: '#1A1F3A', padding: spacing.sm },
+  msgEmpty: { color: '#555', fontSize: fonts.sizes.sm, textAlign: 'center', paddingVertical: 12 },
   msgList: { flex: 1 },
+  // 모바일 PiP 내 상태 오버레이
+  mobileMySub: {
+    position: 'absolute', top: 0, left: 0, right: 0,
+    backgroundColor: 'rgba(37,99,235,0.85)',
+    paddingVertical: 6, paddingHorizontal: 12,
+  },
+  mobileMySubText: { color: '#00FF88', fontSize: fonts.sizes.sm, fontWeight: fonts.weights.medium },
   msgBubble: { borderRadius: 8, paddingVertical: 6, paddingHorizontal: 10, marginBottom: 4, maxWidth: '85%' },
   msgMe: { backgroundColor: '#2563EB', alignSelf: 'flex-end' },
   msgPartner: { backgroundColor: '#374151', alignSelf: 'flex-start' },
