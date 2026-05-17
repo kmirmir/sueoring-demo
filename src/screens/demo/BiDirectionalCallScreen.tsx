@@ -678,6 +678,16 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       {phase === 'calling' && (
         <View style={styles.callingContainer}>
 
+          {/* ── 수신 자막 바 — 화면 최상단 고정 ── */}
+          {!!currentSub && (
+            <View style={styles.topSubBar}>
+              <Text style={styles.topSubText} numberOfLines={2}>{currentSub}</Text>
+              {isSpeaking && (
+                <Text style={styles.topSubTts}>🔊 음성 변환 중...</Text>
+              )}
+            </View>
+          )}
+
           {/* ── PC: 5:5 좌우 분할 ── */}
           {!isMobileWeb ? (
             <View style={[styles.splitRow, { height: remoteVideoHeight }]}>
@@ -938,7 +948,33 @@ const styles = StyleSheet.create({
   roleBadgeText: { color: '#FFFFFF', fontSize: fonts.sizes.base },
 
   // ── Calling ──
-  callingContainer: { flex: 1 },
+  callingContainer: { flex: 1, position: 'relative' },
+
+  // 화면 최상단 수신 자막 바
+  topSubBar: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0,
+    zIndex: 200,
+    backgroundColor: 'rgba(0,0,0,0.92)',
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderBottomWidth: 4,
+    borderBottomColor: '#00FF88',
+    alignItems: 'center',
+  },
+  topSubText: {
+    color: '#FFFFFF',
+    fontSize: 28,
+    fontWeight: '900' as any,
+    textAlign: 'center',
+    lineHeight: 38,
+  },
+  topSubTts: {
+    color: '#00FF88',
+    fontSize: fonts.sizes.sm,
+    marginTop: 4,
+    fontWeight: fonts.weights.medium,
+  },
 
   // PC 5:5 분할
   splitRow: {
