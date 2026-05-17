@@ -58,7 +58,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     /Android|iPhone|iPad|iPod/i.test(typeof navigator !== 'undefined' ? navigator.userAgent : '') ||
     (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0 && screenWidth < 1024)
   );
-  // 헤더(~56px) + 하단 패널(150px) 제외한 영상 영역 높이
+  // 헤더(~56px) + 하단 패널(150px) 제외 (자막 바는 flex로 자동 조정)
   const remoteVideoHeight = Math.max(screenHeight - 56 - 150, 200);
 
   // 단계 & 역할
@@ -458,8 +458,6 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
 
     recorder.ondataavailable = async (e) => {
       if (!sttActiveRef.current || ttsPlayingRef.current) return;
-      // TTS 종료 후 2.5초 이내 청크는 잔향 포함 가능 → 무조건 폐기
-      if (Date.now() - ttsEndTimeRef.current < 2500) return;
       if (e.data.size < 1500) return; // 묵음/너무 짧은 청크 무시
 
       try {
@@ -591,6 +589,16 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
           connStatus === 'connecting' && styles.connDotWait]} />
       </View>
 
+      {/* ── 수신 자막 바 — 헤더 아래 고정 (통화 중에만 표시) ── */}
+      {phase === 'calling' && !!currentSub && (
+        <View style={styles.topSubBar}>
+          <Text style={styles.topSubText} numberOfLines={2}>{currentSub}</Text>
+          {isSpeaking && (
+            <Text style={styles.topSubTts}>🔊 음성 변환 중...</Text>
+          )}
+        </View>
+      )}
+
       {/* ── LOBBY ── */}
       {phase === 'lobby' && (
         <ScrollView contentContainerStyle={styles.lobbyContainer}>
@@ -677,16 +685,6 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       {/* ── CALLING ── */}
       {phase === 'calling' && (
         <View style={styles.callingContainer}>
-
-          {/* ── 수신 자막 바 — 화면 최상단 고정 ── */}
-          {!!currentSub && (
-            <View style={styles.topSubBar}>
-              <Text style={styles.topSubText} numberOfLines={2}>{currentSub}</Text>
-              {isSpeaking && (
-                <Text style={styles.topSubTts}>🔊 음성 변환 중...</Text>
-              )}
-            </View>
-          )}
 
           {/* ── PC: 5:5 좌우 분할 ── */}
           {!isMobileWeb ? (
@@ -948,14 +946,11 @@ const styles = StyleSheet.create({
   roleBadgeText: { color: '#FFFFFF', fontSize: fonts.sizes.base },
 
   // ── Calling ──
-  callingContainer: { flex: 1, position: 'relative' },
+  callingContainer: { flex: 1 },
 
-  // 화면 최상단 수신 자막 바
+  // 수신 자막 바 — 헤더 바로 아래 정상 흐름으로 배치 (absolute 아님)
   topSubBar: {
-    position: 'absolute',
-    top: 0, left: 0, right: 0,
-    zIndex: 200,
-    backgroundColor: 'rgba(0,0,0,0.92)',
+    backgroundColor: 'rgba(0,0,0,0.95)',
     paddingVertical: 14,
     paddingHorizontal: 20,
     borderBottomWidth: 4,
