@@ -1,12 +1,17 @@
 /**
  * SueoRing WebRTC Signaling Server
- * Socket.IO를 사용한 P2P 영상통화 시그널링
+ * Socket.IO 시그널링 + OpenAI TTS/STT API 프록시
  */
 
 const express = require('express');
 const http = require('http');
 const socketIO = require('socket.io');
 const cors = require('cors');
+const multer = require('multer');
+const { OpenAI, toFile } = require('openai');
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
 const app = express();
 const server = http.createServer(app);
@@ -33,8 +38,58 @@ app.get('/health', (req, res) => {
     status: 'ok',
     users: users.size,
     rooms: rooms.size,
+    tts: !!process.env.OPENAI_API_KEY,
     timestamp: new Date().toISOString()
   });
+});
+
+// ── OpenAI TTS 프록시 ──────────────────────────────────────
+// POST /api/tts  { text: "안녕하세요" }  →  mp3 오디오 반환
+app.post('/api/tts', express.json(), async (req, res) => {
+  const { text } = req.body;
+  if (!text?.trim()) return res.status(400).json({ error: 'text required' });
+  if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'OpenAI API key not configured' });
+
+  try {
+    const response = await openai.audio.speech.create({
+      model: 'tts-1',
+      voice: 'nova',      // 한국어에 가장 자연스러운 보이스
+      input: text.trim(),
+      response_format: 'mp3',
+    });
+    const buffer = Buffer.from(await response.arrayBuffer());
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Length', buffer.length);
+    res.send(buffer);
+  } catch (err) {
+    console.error('TTS error:', err.message);
+    res.status(500).json({ error: 'TTS failed' });
+  }
+});
+
+// ── OpenAI Whisper STT 프록시 ──────────────────────────────
+// POST /api/stt  multipart: audio 파일  →  { text: "..." } 반환
+app.post('/api/stt', upload.single('audio'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'audio file required' });
+  if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'OpenAI API key not configured' });
+
+  try {
+    // multer 메모리 버퍼 → OpenAI SDK가 읽을 수 있는 File 객체로 변환
+    const ext = req.file.mimetype.includes('mp4') ? 'mp4'
+              : req.file.mimetype.includes('ogg')  ? 'ogg'
+              : 'webm';
+    const file = await toFile(req.file.buffer, `audio.${ext}`, { type: req.file.mimetype });
+
+    const transcription = await openai.audio.transcriptions.create({
+      file,
+      model: 'whisper-1',
+      language: 'ko',     // 한국어 고정으로 정확도 향상
+    });
+    res.json({ text: transcription.text || '' });
+  } catch (err) {
+    console.error('STT error:', err.message);
+    res.status(500).json({ error: 'STT failed' });
+  }
 });
 
 // Socket.IO 연결 처리

@@ -94,9 +94,10 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const socketRef       = useRef<Socket | null>(null);
   const pcRef           = useRef<RTCPeerConnection | null>(null);
   const dcRef           = useRef<RTCDataChannel | null>(null);
-  const handsRef        = useRef<any>(null);
-  const recognitionRef  = useRef<any>(null);
-  const sttActiveRef    = useRef(false);  // STT 재시작 플래그
+  const handsRef           = useRef<any>(null);
+  const mediaRecorderRef   = useRef<MediaRecorder | null>(null);  // Whisper STT
+  const currentAudioRef    = useRef<HTMLAudioElement | null>(null); // OpenAI TTS
+  const sttActiveRef       = useRef(false);
   const animFrameRef    = useRef<number | null>(null);
   const workingCdnRef   = useRef<string>(CDN_PROVIDERS[0]);
   const currentRoomRef  = useRef('');
@@ -106,7 +107,9 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const cleanup = useCallback(() => {
     animFrameRef.current && cancelAnimationFrame(animFrameRef.current);
     sttActiveRef.current = false;
-    try { recognitionRef.current?.abort(); } catch { /* 무시 */ }
+    try { mediaRecorderRef.current?.stop(); } catch { /* 무시 */ }
+    mediaRecorderRef.current = null;
+    if (currentAudioRef.current) { currentAudioRef.current.pause(); currentAudioRef.current = null; }
     handsRef.current?.close?.();
     dcRef.current?.close();
     pcRef.current?.close();
@@ -160,40 +163,9 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
 
       setMessages(prev => [...prev, { text, from: 'partner', ts: Date.now() }]);
 
-      // 청인: 수어 자막 수신 시 TTS 즉시 재생 + isSpeaking 연동
-      if (role === 'hearing' && Platform.OS === 'web' && 'speechSynthesis' in window) {
-        const synth = window.speechSynthesis;
-        synth.cancel();  // 이전 발화 즉시 중단, 큐 비움
-        const utt = new SpeechSynthesisUtterance(text);
-        utt.lang    = 'ko-KR';
-        utt.rate    = 1.15;
-        utt.pitch   = 1.0;
-        utt.volume  = 1.0;
-        utt.onstart = () => {
-          setIsSpeaking(true);
-          ttsPlayingRef.current = true;
-          // TTS 재생 중 청인 마이크 뮤트
-          // → TTS 음성이 마이크로 캡처되어 WebRTC로 농인에게 전달되는 에코 차단
-          localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = false; });
-          // STT도 중단 (에코 오인식 방지)
-          try { recognitionRef.current?.abort(); } catch { /* 무시 */ }
-        };
-        utt.onend = () => {
-          setIsSpeaking(false);
-          ttsPlayingRef.current = false;
-          // TTS 종료 후 마이크 다시 활성화 → 청인 목소리 농인에게 정상 전달 재개
-          localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = true; });
-          // STT는 onend 핸들러가 자동 재시작
-        };
-        utt.onerror = () => {
-          setIsSpeaking(false);
-          ttsPlayingRef.current = false;
-          localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = true; });
-        };
-        requestAnimationFrame(() => {
-          if (synth.paused) synth.resume();
-          synth.speak(utt);
-        });
+      // 청인: 수어 자막 수신 시 OpenAI TTS 재생
+      if (role === 'hearing' && Platform.OS === 'web') {
+        playOpenAITTS(text);
       }
     } catch { /* 무시 */ }
   }, [role]);
@@ -398,63 +370,101 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     processFrame();
   };
 
-  // ── Web Speech API STT (청인 전용) ───────────────────────
-  const initSTT = () => {
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR) { setError('음성 인식을 지원하지 않습니다. Chrome 브라우저를 사용해주세요.'); return; }
+  // ── OpenAI TTS (tts-1) ───────────────────────────────────
+  const playOpenAITTS = async (text: string) => {
+    // 이전 재생 즉시 중단
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current = null;
+    }
+    setIsSpeaking(true);
+    ttsPlayingRef.current = true;
+    // 마이크 뮤트 + MediaRecorder 일시 정지 → 에코 차단
+    localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = false; });
+    try { mediaRecorderRef.current?.pause(); } catch { /* 무시 */ }
 
+    try {
+      const response = await fetch(`${SIGNAL_SERVER}/api/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      if (!response.ok) throw new Error(`TTS HTTP ${response.status}`);
+
+      const blob = await response.blob();
+      const url  = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      currentAudioRef.current = audio;
+
+      const onFinish = () => {
+        URL.revokeObjectURL(url);
+        currentAudioRef.current = null;
+        setIsSpeaking(false);
+        ttsPlayingRef.current = false;
+        localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = true; });
+        try { mediaRecorderRef.current?.resume(); } catch { /* 무시 */ }
+      };
+      audio.onended = onFinish;
+      audio.onerror = onFinish;
+      await audio.play();
+    } catch (err) {
+      console.error('OpenAI TTS error:', err);
+      setIsSpeaking(false);
+      ttsPlayingRef.current = false;
+      localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = true; });
+      try { mediaRecorderRef.current?.resume(); } catch { /* 무시 */ }
+    }
+  };
+
+  // ── OpenAI Whisper STT (청인 전용) — MediaRecorder 3초 청크 방식 ──
+  const initSTT = () => {
+    if (!localStreamRef.current) return;
+    const audioTracks = localStreamRef.current.getAudioTracks();
+    if (!audioTracks.length) return;
+
+    // 지원 MIME 타입 탐지 (Whisper가 모두 지원)
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
+                   : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm'
+                   : MediaRecorder.isTypeSupported('audio/mp4')  ? 'audio/mp4'
+                   : 'audio/ogg';
+    const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
+
+    const audioStream = new MediaStream(audioTracks);
+    const recorder = new MediaRecorder(audioStream, { mimeType });
+    mediaRecorderRef.current = recorder;
     sttActiveRef.current = true;
 
-    const startRecognition = () => {
-      // TTS 재생 중이면 STT 시작 거부 → 에코 방지
+    recorder.ondataavailable = async (e) => {
       if (!sttActiveRef.current || ttsPlayingRef.current) return;
+      if (e.data.size < 1500) return; // 묵음/너무 짧은 청크 무시
 
-      const recognition = new SR();
-      // WebRTC 마이크 점유 후 SpeechRecognition이 동일 트랙을 사용하도록
-      // lang을 명시적으로 'ko-KR'로 강제 설정
-      recognition.lang = 'ko-KR';
-      recognition.continuous = false;       // false로 설정 후 onend 재시작이 더 안정적
-      recognition.interimResults = true;
-      recognition.maxAlternatives = 3;      // 여러 후보로 인식률 향상
+      try {
+        setSttLive('인식 중...');
+        const formData = new FormData();
+        formData.append('audio', e.data, `audio.${ext}`);
 
-      recognition.onresult = (e: any) => {
-        let interim = '', final = '';
-        for (let i = e.resultIndex; i < e.results.length; i++) {
-          // maxAlternatives 중 신뢰도 가장 높은 첫 번째 선택
-          const t = e.results[i][0].transcript;
-          if (e.results[i].isFinal) final += t;
-          else interim += t;
-        }
-        setSttLive(interim);
-        if (final.trim()) {
-          setSttLive('');
-          const text = final.trim();
+        const response = await fetch(`${SIGNAL_SERVER}/api/stt`, {
+          method: 'POST',
+          body: formData,
+        });
+        const data = await response.json();
+        const text = data.text?.trim();
+        setSttLive('');
+
+        if (text) {
           setMessages(prev => [...prev, { text, from: 'me', ts: Date.now() }]);
           if (dcRef.current?.readyState === 'open') {
             dcRef.current.send(JSON.stringify({ type: 'speech', text }));
           }
         }
-      };
-
-      // 한 세션 종료 후 즉시 재시작 (continuous 대신 이 방식이 더 안정적)
-      recognition.onend = () => { if (sttActiveRef.current) setTimeout(startRecognition, 150); };
-
-      recognition.onerror = (e: any) => {
-        if (e.error === 'aborted' || e.error === 'interrupted') return;
-        if (sttActiveRef.current) {
-          const delay = e.error === 'no-speech' ? 150 : 1000;
-          setTimeout(startRecognition, delay);
-        }
-      };
-
-      try {
-        recognition.start();
-        recognitionRef.current = recognition;
-      } catch { /* 동시 시작 방지 */ }
+      } catch (err) {
+        console.error('Whisper STT error:', err);
+        setSttLive('');
+      }
     };
 
-    // WebRTC 마이크 획득 직후 바로 시작하면 충돌 가능 → 500ms 딜레이
-    setTimeout(startRecognition, 500);
+    // 3초마다 청크 수집 (지연 vs 정확도 균형)
+    recorder.start(3000);
   };
 
   // ── 방 만들기 ────────────────────────────────────────────
