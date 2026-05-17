@@ -91,7 +91,8 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const remoteStreamRef = useRef<MediaStream | null>(null);
   const subClearTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ttsPlayingRef       = useRef(false);
-  const recentTTSTextsRef   = useRef<string[]>([]); // TTS 재생 텍스트 → STT 에코 감지용
+  const recentTTSTextsRef   = useRef<string[]>([]);
+  const ttsEndTimeRef       = useRef<number>(0); // TTS 종료 시각 → 시간 기반 STT 차단용
   const socketRef       = useRef<Socket | null>(null);
   const pcRef           = useRef<RTCPeerConnection | null>(null);
   const dcRef           = useRef<RTCDataChannel | null>(null);
@@ -388,9 +389,12 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
 
     setIsSpeaking(true);
     ttsPlayingRef.current = true;
-    // 마이크 뮤트
+
+    // ① 로컬 마이크 뮤트 (내 음성이 상대방으로 전달되지 않게)
     localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = false; });
-    // pause 대신 stop → 버퍼 자체를 버려 에코 청크 차단
+    // ② 원격 오디오도 뮤트 (상대방 WebRTC 음성 + TTS 동시 출력 → 마이크 혼입 차단)
+    if (remoteVideoRef.current) remoteVideoRef.current.muted = true;
+    // ③ MediaRecorder stop → 버퍼 폐기
     try { mediaRecorderRef.current?.stop(); mediaRecorderRef.current = null; } catch { /* 무시 */ }
 
     try {
@@ -411,12 +415,14 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
         currentAudioRef.current = null;
         setIsSpeaking(false);
         ttsPlayingRef.current = false;
-        // 800ms 지연 후 마이크 재활성화 + MediaRecorder 재시작
-        // (잔향 소멸 + 새 버퍼에서 깨끗하게 시작)
+        ttsEndTimeRef.current = Date.now(); // 종료 시각 기록
+        // 원격 오디오 언뮤트 복원
+        if (remoteVideoRef.current) remoteVideoRef.current.muted = false;
+        // 2500ms 후 마이크 재활성화 + MediaRecorder 재시작 (잔향 완전 소멸 대기)
         setTimeout(() => {
           localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = true; });
           if (sttActiveRef.current) initSTT();
-        }, 800);
+        }, 2500);
       };
       audio.onended = onFinish;
       audio.onerror = onFinish;
@@ -425,6 +431,8 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       console.error('OpenAI TTS error:', err);
       setIsSpeaking(false);
       ttsPlayingRef.current = false;
+      ttsEndTimeRef.current = Date.now();
+      if (remoteVideoRef.current) remoteVideoRef.current.muted = false;
       localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = true; });
       if (sttActiveRef.current) initSTT();
     }
@@ -450,6 +458,8 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
 
     recorder.ondataavailable = async (e) => {
       if (!sttActiveRef.current || ttsPlayingRef.current) return;
+      // TTS 종료 후 2.5초 이내 청크는 잔향 포함 가능 → 무조건 폐기
+      if (Date.now() - ttsEndTimeRef.current < 2500) return;
       if (e.data.size < 1500) return; // 묵음/너무 짧은 청크 무시
 
       try {
