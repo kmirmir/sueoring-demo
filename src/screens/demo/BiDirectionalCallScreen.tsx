@@ -89,8 +89,9 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const canvasRef       = useRef<HTMLCanvasElement>(null);
   const localStreamRef  = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
-  const subClearTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const ttsPlayingRef     = useRef(false); // TTS 재생 중 플래그 → STT 에코 차단용
+  const subClearTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ttsPlayingRef       = useRef(false);
+  const recentTTSTextsRef   = useRef<string[]>([]); // TTS 재생 텍스트 → STT 에코 감지용
   const socketRef       = useRef<Socket | null>(null);
   const pcRef           = useRef<RTCPeerConnection | null>(null);
   const dcRef           = useRef<RTCDataChannel | null>(null);
@@ -378,11 +379,19 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       currentAudioRef.current.pause();
       currentAudioRef.current = null;
     }
+
+    // 에코 텍스트 목록에 등록 (8초 후 자동 제거)
+    recentTTSTextsRef.current.push(text);
+    setTimeout(() => {
+      recentTTSTextsRef.current = recentTTSTextsRef.current.filter(t => t !== text);
+    }, 8000);
+
     setIsSpeaking(true);
     ttsPlayingRef.current = true;
-    // 마이크 뮤트 + MediaRecorder 일시 정지 → 에코 차단
+    // 마이크 뮤트
     localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = false; });
-    try { mediaRecorderRef.current?.pause(); } catch { /* 무시 */ }
+    // pause 대신 stop → 버퍼 자체를 버려 에코 청크 차단
+    try { mediaRecorderRef.current?.stop(); mediaRecorderRef.current = null; } catch { /* 무시 */ }
 
     try {
       const response = await fetch(`${SIGNAL_SERVER}/api/tts`, {
@@ -402,11 +411,12 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
         currentAudioRef.current = null;
         setIsSpeaking(false);
         ttsPlayingRef.current = false;
-        // 500ms 지연 후 마이크 재활성화 — TTS 잔향이 마이크로 유입되는 현상 방지
+        // 800ms 지연 후 마이크 재활성화 + MediaRecorder 재시작
+        // (잔향 소멸 + 새 버퍼에서 깨끗하게 시작)
         setTimeout(() => {
           localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = true; });
-          try { mediaRecorderRef.current?.resume(); } catch { /* 무시 */ }
-        }, 500);
+          if (sttActiveRef.current) initSTT();
+        }, 800);
       };
       audio.onended = onFinish;
       audio.onerror = onFinish;
@@ -416,7 +426,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       setIsSpeaking(false);
       ttsPlayingRef.current = false;
       localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = true; });
-      try { mediaRecorderRef.current?.resume(); } catch { /* 무시 */ }
+      if (sttActiveRef.current) initSTT();
     }
   };
 
@@ -455,11 +465,22 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
         const text = data.text?.trim();
         setSttLive('');
 
-        if (text) {
-          setMessages(prev => [...prev, { text, from: 'me', ts: Date.now() }]);
-          if (dcRef.current?.readyState === 'open') {
-            dcRef.current.send(JSON.stringify({ type: 'speech', text }));
-          }
+        if (!text) return;
+
+        // 에코 감지: 최근 TTS로 재생한 텍스트와 일치하면 폐기
+        const normalize = (s: string) => s.replace(/\s+/g, '');
+        const isEcho = recentTTSTextsRef.current.some(t =>
+          normalize(t).includes(normalize(text)) ||
+          normalize(text).includes(normalize(t))
+        );
+        if (isEcho) {
+          console.log('🔇 에코 감지 폐기:', text);
+          return;
+        }
+
+        setMessages(prev => [...prev, { text, from: 'me', ts: Date.now() }]);
+        if (dcRef.current?.readyState === 'open') {
+          dcRef.current.send(JSON.stringify({ type: 'speech', text }));
         }
       } catch (err) {
         console.error('Whisper STT error:', err);
