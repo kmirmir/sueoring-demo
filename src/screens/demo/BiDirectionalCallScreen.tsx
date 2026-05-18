@@ -543,8 +543,6 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     if (remoteVideoRef.current) remoteVideoRef.current.muted = true;
     // ③ MediaRecorder stop → 버퍼 폐기
     try { mediaRecorderRef.current?.stop(); mediaRecorderRef.current = null; } catch { /* 무시 */ }
-    // ④ Web Speech API 중지 (TTS 오디오를 마이크가 인식하지 않도록)
-    try { recognitionRef.current?.abort(); } catch { /* 무시 */ }
 
     try {
       const response = await fetch(`${SIGNAL_SERVER}/api/tts`, {
@@ -570,10 +568,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
         // 1000ms 후 마이크 재활성화 + STT 재시작 (잔향 소멸 대기)
         setTimeout(() => {
           localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = true; });
-          if (sttActiveRef.current) {
-            initSTT();
-            startRealtimeDisplay();  // Web Speech API도 재시작
-          }
+          if (sttActiveRef.current) initSTT();
         }, 1000);
       };
       audio.onended = onFinish;
@@ -586,49 +581,11 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       ttsEndTimeRef.current = Date.now();
       if (remoteVideoRef.current) remoteVideoRef.current.muted = false;
       localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = true; });
-      if (sttActiveRef.current) { initSTT(); startRealtimeDisplay(); }
+      if (sttActiveRef.current) initSTT();
     }
   };
 
-  // ── Web Speech API: 실시간 자막 디스플레이 (청인 전용) ────────────
-  // Whisper는 전송 정확도, Web Speech API는 실시간 시각 피드백 담당
-  const startRealtimeDisplay = () => {
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR) return;  // 미지원 브라우저 → Whisper만 사용
-    try {
-      const rec = new SR();
-      recognitionRef.current = rec;
-      rec.lang = 'ko-KR';
-      rec.continuous = true;
-      rec.interimResults = true;   // 중간 결과 즉시 표시
-      rec.maxAlternatives = 1;
-
-      rec.onresult = (event: any) => {
-        if (ttsPlayingRef.current || !sttActiveRef.current) return;
-        let interim = '';
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          if (!event.results[i].isFinal) {
-            interim += event.results[i][0].transcript;
-          }
-        }
-        if (interim) setSttLive(interim);  // 실시간 표시 (Whisper 결과로 나중에 덮어씀)
-      };
-
-      rec.onerror = () => {};
-      rec.onend = () => {
-        // 자동 재시작 (continuous 모드 종료 대응)
-        if (sttActiveRef.current && !ttsPlayingRef.current) {
-          setTimeout(() => {
-            try { rec.start(); } catch {}
-          }, 300);
-        }
-      };
-
-      rec.start();
-    } catch { /* 미지원 시 무시 */ }
-  };
-
-  // ── OpenAI Whisper STT (청인 전용) — MediaRecorder 3초 청크 방식 ──
+  // ── OpenAI Whisper STT (청인 전용) — MediaRecorder 1.5초 청크 방식 ──
   // Whisper 환각 블랙리스트: 단일 일반 단어 제외, 복합 문구만 차단
   // (감사합니다·좋아요 등 일상어는 제거 — 정상 발화 오차단 방지)
   const STT_HALLUCINATIONS = [
@@ -836,14 +793,9 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       initMediaPipe().catch(e => setError(`MediaPipe 로드 실패: ${e.message}`));
     } else {
       initSTT();
-      startRealtimeDisplay();  // Web Speech API 실시간 자막 디스플레이 병행
     }
 
-    return () => {
-      clearTimeout(relayTimer);
-      // Web Speech 정리
-      try { recognitionRef.current?.abort(); } catch {}
-    };
+    return () => clearTimeout(relayTimer);
   }, [phase]); // eslint-disable-line
 
   // 원격 스트림 도착 또는 relay 모드 해제 시 video에 연결
