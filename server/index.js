@@ -292,7 +292,7 @@ io.on('connection', (socket) => {
         session: {
           // modalities 기본값(['audio','text']) 사용 — text-only 설정 시 오디오 처리 안 됨
           input_audio_format: 'pcm16',
-          input_audio_transcription: { model: 'whisper-1' },
+          input_audio_transcription: { model: 'gpt-4o-transcribe' },
           turn_detection: {
             type: 'server_vad',
             threshold: 0.3,    // 0.5 → 0.3 (모바일 마이크 감도 향상)

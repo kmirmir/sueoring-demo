@@ -101,6 +101,9 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const [relayMode, setRelayMode] = useState(false);
   // STT 오디오 파이프라인 상태 (청인 전용 진단용)
   const [sttReady, setSttReady] = useState(false);
+  // 인앱 디버그 로그 (모바일 콘솔 대체)
+  const [debugLog, setDebugLog] = useState<string[]>([]);
+  const [showDebug, setShowDebug] = useState(false);
 
   // Refs
   const localVideoRef   = useRef<HTMLVideoElement>(null);
@@ -124,8 +127,13 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const currentAudioRef        = useRef<HTMLAudioElement | null>(null); // OpenAI TTS
   const sttActiveRef           = useRef(false);
   const recognitionRef         = useRef<any>(null);
-  const realtimeAudioCtxRef    = useRef<AudioContext | null>(null);   // Realtime STT AudioContext
-  const realtimeProcessorRef   = useRef<ScriptProcessorNode | null>(null); // Realtime STT processor
+  const realtimeAudioCtxRef    = useRef<AudioContext | null>(null);
+  const realtimeProcessorRef   = useRef<ScriptProcessorNode | null>(null);
+  // 인앱 디버그: setDebugLog는 stable reference이므로 어느 클로저에서도 안전하게 호출 가능
+  const addLog = useRef((msg: string) => {
+    const t = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+    setDebugLog(prev => [...prev.slice(-9), `${t} ${msg}`]);
+  }).current;
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);  // ICE candidate 버퍼
   const animFrameRef    = useRef<number | null>(null);
   const workingCdnRef   = useRef<string>(CDN_PROVIDERS[0]);
@@ -418,11 +426,12 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     // Realtime STT 에러 수신 (진단용)
     socket.on('realtime-error', ({ message }: { message: string }) => {
       console.error('🔴 Realtime STT error:', message);
+      addLog(`🔴 서버에러: ${message}`);
     });
 
     // ── Realtime STT 트랜스크립트 수신 (청인 전용) ──────────────
     socket.on('realtime-transcript', ({ type, text }: { type: 'start' | 'delta' | 'final'; text: string }) => {
-      console.log('[STT] realtime-transcript:', type, text ? text.substring(0, 40) : '');
+      addLog(`📝 transcript:${type} "${(text || '').substring(0, 20)}"`);
       if (type === 'start') {
         setSttLive('');
       } else if (type === 'delta') {
@@ -652,13 +661,13 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   // 서버 VAD가 발화 구간 자동 감지, 트랜스크립트는 realtime-transcript 이벤트로 수신
   const initRealtimeSTT = () => {
     if (!localStreamRef.current || !socketRef.current?.connected) {
-      console.warn('[STT] 조건 미충족 — stream:', !!localStreamRef.current, 'connected:', socketRef.current?.connected);
+      addLog(`❌ 조건미충족 stream:${!!localStreamRef.current} conn:${socketRef.current?.connected}`);
       return;
     }
     sttActiveRef.current = true;
     setSttReady(false);
     socketRef.current.emit('realtime-start');
-    console.log('[STT] realtime-start 전송');
+    addLog('📤 realtime-start 전송');
 
     try {
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
@@ -672,7 +681,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
         if (firstFire) {
           firstFire = false;
           setSttReady(true);
-          console.log('[STT] onaudioprocess 첫 발화 감지 — 파이프라인 정상');
+          addLog('🎵 오디오 파이프라인 OK (첫 발화)');
         }
         if (!sttActiveRef.current || ttsPlayingRef.current) return;
         const float32 = e.inputBuffer.getChannelData(0);
@@ -694,14 +703,14 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       realtimeAudioCtxRef.current = audioCtx;
       realtimeProcessorRef.current = processor;
 
-      console.log('[STT] AudioContext 상태:', audioCtx.state);
+      addLog(`🔊 AudioCtx: ${audioCtx.state}`);
       if (audioCtx.state === 'suspended') {
         audioCtx.resume()
-          .then(() => console.log('[STT] AudioContext resumed'))
-          .catch(err => console.error('[STT] resume 실패:', err));
+          .then(() => addLog('✅ AudioCtx resumed'))
+          .catch(err => addLog(`❌ resume실패: ${err}`));
       }
     } catch (err) {
-      console.error('[STT] initRealtimeSTT 오류:', err);
+      addLog(`❌ init오류: ${err}`);
       sttActiveRef.current = false;
       setSttReady(false);
     }
@@ -1174,28 +1183,47 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
             </View>
           )}
 
-          {/* 청인 전용: STT 상태 표시 + 수동 활성화 버튼 */}
+          {/* 청인 전용: STT 상태 표시 + 수동 활성화 + 디버그 패널 */}
           {role === 'hearing' && (
-            <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#111827', paddingHorizontal: 12, paddingVertical: 6, gap: 8 }}>
-              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: sttReady ? '#00FF88' : '#FF5555' }} />
-              <Text style={{ color: sttReady ? '#00FF88' : '#FF9900', fontSize: 12, flex: 1 }}>
-                {sttReady ? '🎙️ STT 활성 (음성 인식 중)' : '🎙️ STT 비활성 — 아래 버튼을 탭하세요'}
-              </Text>
-              {!sttReady && (
+            <View style={{ backgroundColor: '#111827' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, gap: 8 }}>
+                <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: sttReady ? '#00FF88' : '#FF5555' }} />
+                <Text style={{ color: sttReady ? '#00FF88' : '#FF9900', fontSize: 12, flex: 1 }}>
+                  {sttReady ? '🎙️ STT 활성' : '🎙️ STT 비활성'}
+                </Text>
+                {!sttReady && (
+                  <TouchableOpacity
+                    style={{ backgroundColor: '#1D4ED8', paddingVertical: 4, paddingHorizontal: 10, borderRadius: 6 }}
+                    onPress={() => {
+                      if (realtimeAudioCtxRef.current?.state === 'suspended') {
+                        realtimeAudioCtxRef.current.resume().then(() => addLog('✅ 수동 resume'));
+                      } else {
+                        cleanupRealtimeSTT();
+                        setTimeout(() => initRealtimeSTT(), 100);
+                      }
+                    }}
+                  >
+                    <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>STT 시작</Text>
+                  </TouchableOpacity>
+                )}
                 <TouchableOpacity
-                  style={{ backgroundColor: '#1D4ED8', paddingVertical: 4, paddingHorizontal: 12, borderRadius: 6 }}
-                  onPress={() => {
-                    // 사용자 제스처로 AudioContext resume 후 재시작
-                    if (realtimeAudioCtxRef.current?.state === 'suspended') {
-                      realtimeAudioCtxRef.current.resume().then(() => console.log('[STT] 수동 resume 완료'));
-                    } else {
-                      cleanupRealtimeSTT();
-                      setTimeout(() => initRealtimeSTT(), 100);
-                    }
-                  }}
+                  style={{ backgroundColor: '#374151', paddingVertical: 4, paddingHorizontal: 8, borderRadius: 6 }}
+                  onPress={() => setShowDebug(p => !p)}
                 >
-                  <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>STT 시작</Text>
+                  <Text style={{ color: '#9CA3AF', fontSize: 11 }}>{showDebug ? '로그숨김' : '로그보기'}</Text>
                 </TouchableOpacity>
+              </View>
+              {showDebug && (
+                <View style={{ backgroundColor: '#030712', paddingHorizontal: 10, paddingVertical: 6, maxHeight: 150 }}>
+                  <ScrollView>
+                    {debugLog.length === 0
+                      ? <Text style={{ color: '#4B5563', fontSize: 10 }}>로그 없음</Text>
+                      : debugLog.map((log, i) => (
+                          <Text key={i} style={{ color: '#00FF88', fontSize: 10, fontFamily: 'monospace', lineHeight: 16 }}>{log}</Text>
+                        ))
+                    }
+                  </ScrollView>
+                </View>
               )}
             </View>
           )}
