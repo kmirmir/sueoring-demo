@@ -95,6 +95,8 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const [needsPlayTap, setNeedsPlayTap] = useState(false);
   // 실제 전송된 제스처 자막 (전송 확인용 소형 표시)
   const [sentGestureLabel, setSentGestureLabel] = useState('');
+  // 쿨다운 중 표시 (전송 후 2초간 활성)
+  const [cooldownActive, setCooldownActive] = useState(false);
   // Socket.IO 릴레이 모드 (ICE 실패 시 폴백)
   const [relayMode, setRelayMode] = useState(false);
 
@@ -484,8 +486,10 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
           } else if (socketRef.current?.connected) {
             socketRef.current.emit('room-text', { roomCode: currentRoomRef.current, type: 'gesture', text: gesture });
           }
-          // 전송 확인 자막: 실제 전송된 제스처만 표시 (5초 후 자동 소멸)
+          // 전송 확인 + 2초 쿨다운 UI 활성
           setSentGestureLabel(gesture);
+          setCooldownActive(true);
+          setTimeout(() => setCooldownActive(false), 2000);
           setTimeout(() => setSentGestureLabel(prev => prev === gesture ? '' : prev), 5000);
           setMessages(prev => {
             const last = prev[prev.length - 1];
@@ -1039,10 +1043,12 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                     </Text>
                   </View>
                 )}
-                {/* 전송 확인 뱃지: 실제 전송된 수어 소형 표시 (농인 전용) */}
-                {role === 'deaf' && !!sentGestureLabel && (
-                  <View style={styles.sentBadge}>
-                    <Text style={styles.sentBadgeText}>📤 전송됨: {sentGestureLabel}</Text>
+                {/* 전송 확인 뱃지 / 쿨다운 표시 (농인 전용) */}
+                {role === 'deaf' && (!!sentGestureLabel || cooldownActive) && (
+                  <View style={[styles.sentBadge, cooldownActive && styles.sentBadgeCooldown]}>
+                    <Text style={styles.sentBadgeText}>
+                      {cooldownActive ? `⏸ 전송됨: ${sentGestureLabel} (대기 중...)` : `📤 전송됨: ${sentGestureLabel}`}
+                    </Text>
                   </View>
                 )}
                 {/* 하단 자막: 🗣️ 청인 발화 인식 결과 */}
@@ -1095,10 +1101,12 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                 </View>
               )}
 
-              {/* 전송 확인 뱃지: 실제 전송된 수어 소형 표시 (농인 전용) */}
-              {role === 'deaf' && !!sentGestureLabel && (
-                <View style={styles.sentBadge}>
-                  <Text style={styles.sentBadgeText}>📤 전송됨: {sentGestureLabel}</Text>
+              {/* 전송 확인 뱃지 / 쿨다운 표시 (농인 전용) */}
+              {role === 'deaf' && (!!sentGestureLabel || cooldownActive) && (
+                <View style={[styles.sentBadge, cooldownActive && styles.sentBadgeCooldown]}>
+                  <Text style={styles.sentBadgeText}>
+                    {cooldownActive ? `⏸ 전송됨: ${sentGestureLabel} (대기 중...)` : `📤 전송됨: ${sentGestureLabel}`}
+                  </Text>
                 </View>
               )}
 
@@ -1419,7 +1427,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 68,          // subOverlayTop 바로 아래
     left: 12, right: 12,
-    zIndex: 25,       // subOverlayTop(20) 보다 높게
+    zIndex: 25,
     backgroundColor: 'rgba(30,58,138,0.88)',
     borderRadius: 8,
     paddingVertical: 5,
@@ -1427,6 +1435,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#60A5FA',
+  },
+  sentBadgeCooldown: {
+    backgroundColor: 'rgba(120,53,15,0.88)',  // 쿨다운 중: 주황/갈색 배경
+    borderColor: '#F97316',
   },
   sentBadgeText: {
     color: '#BAE6FD',
