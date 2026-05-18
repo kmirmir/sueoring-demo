@@ -711,8 +711,17 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       setSttReady(false);
       addLog('⏹ recorder 중단');
     });
-    recorder.start(1500);
-    addLog('▶ recorder.start(1500ms)');
+
+    // timeslice 없이 start() → requestData()로 주기적 수동 요청
+    // (iOS Safari 등 timeslice 미지원 브라우저 대응)
+    recorder.start();
+    addLog('▶ recorder.start()');
+    const dataTimer = setInterval(() => {
+      if (mediaRecorderRef.current?.state === 'recording') {
+        mediaRecorderRef.current.requestData();
+      }
+    }, 1500);
+    recorder.addEventListener('stop', () => clearInterval(dataTimer), { once: true });
 
     // 자가 복구 헬스체크: 6초마다 확인, 비활성 시 자동 재시작
     const healthCheckId = setInterval(() => {
