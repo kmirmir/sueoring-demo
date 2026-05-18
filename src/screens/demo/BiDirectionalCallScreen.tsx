@@ -39,10 +39,6 @@ const ICE_SERVERS = [
   { urls: 'stun:stun1.l.google.com:19302' },
   { urls: 'stun:stun2.l.google.com:19302' },
   { urls: 'stun:stun3.l.google.com:19302' },
-  // TURN 릴레이: STUN만으로 연결 안 되는 NAT 환경 대응 (symmetric NAT, 방화벽 등)
-  { urls: 'turn:openrelay.metered.ca:80',                  username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443',                 username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443?transport=tcp',   username: 'openrelayproject', credential: 'openrelayproject' },
 ];
 
 // ── 타입 ──────────────────────────────────────────────────
@@ -88,6 +84,8 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const [isSpeaking, setIsSpeaking] = useState(false);
   // 원격 스트림 — state로 관리해야 도착 즉시 useEffect 재실행으로 video에 연결
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  // ICE 상태 — 진단용 화면 표시
+  const [iceState, setIceState] = useState('');
 
   // Refs
   const localVideoRef   = useRef<HTMLVideoElement>(null);
@@ -191,7 +189,14 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
 
   // ── WebRTC PeerConnection 생성 ───────────────────────────
   const createPeerConnection = useCallback((code: string) => {
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    let pc: RTCPeerConnection;
+    try {
+      pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    } catch (e) {
+      console.error('RTCPeerConnection 생성 실패:', e);
+      setError('WebRTC 초기화 실패');
+      return null;
+    }
     pcRef.current = pc;
 
     // ICE candidate → 시그널링 서버 중계
@@ -199,30 +204,30 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       if (candidate) socketRef.current?.emit('room-ice', { roomCode: code, candidate });
     };
 
-    // ICE 연결 상태 — 브라우저마다 발화 방식이 달라 두 이벤트 모두 등록
-    const handleConnected = () => setConnStatus('connected');
-    const handleDisconnected = () => setConnStatus('idle');
-
+    // ICE 연결 상태 — 진단용 텍스트 + connStatus 양쪽 업데이트
     pc.oniceconnectionstatechange = () => {
       const s = pc.iceConnectionState;
-      if (s === 'connected' || s === 'completed') handleConnected();
-      else if (s === 'failed' || s === 'disconnected') handleDisconnected();
+      console.log('ICE state:', s);
+      setIceState(s);
+      if (s === 'connected' || s === 'completed') setConnStatus('connected');
+      else if (s === 'failed' || s === 'disconnected') setConnStatus('idle');
     };
 
-    // connectionState는 ICE와 별개로 전체 연결 상태를 추적 (Safari 등 대응)
+    // connectionState (Safari 등 대응)
     pc.onconnectionstatechange = () => {
       const s = pc.connectionState;
-      if (s === 'connected') handleConnected();
-      else if (s === 'failed' || s === 'disconnected' || s === 'closed') handleDisconnected();
+      console.log('Connection state:', s);
+      if (s === 'connected') setConnStatus('connected');
+      else if (s === 'failed' || s === 'disconnected' || s === 'closed') setConnStatus('idle');
     };
 
-    // 원격 영상 스트림 수신 — ontrack은 offer/answer 완료 직후 발화 (ICE 이전)
-    // 스트림 도착을 connStatus 기준으로 삼아 양측 모두 안정적으로 '연결됨' 처리
+    // 원격 영상 스트림 수신
     pc.ontrack = (event) => {
+      console.log('ontrack fired, tracks:', event.streams[0]?.getTracks().length);
       const stream = event.streams[0] ?? new MediaStream([event.track]);
       remoteStreamRef.current = stream;
       setRemoteStream(stream);
-      setConnStatus('connected');  // ICE 이벤트 미발화 브라우저 대응
+      setConnStatus('connected');
     };
 
     // DataChannel 수신 (비창시자)
@@ -246,6 +251,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     socket.on('room-ready', async ({ isInitiator }: { isInitiator: boolean; partnerRole: Role }) => {
       setPhase('calling');
       const pc = createPeerConnection(code);
+      if (!pc) return;  // RTCPeerConnection 생성 실패 시 중단
 
       // 로컬 스트림을 PC에 추가 (ref에서 직접 참조 — DOM 교체 영향 없음)
       if (localStreamRef.current) {
@@ -784,7 +790,8 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                 {!remoteStream && (
                   <View style={styles.videoPlaceholder}>
                     <Text style={styles.videoPlaceholderText}>⏳ 연결 중...</Text>
-                    <Text style={{ color: '#666', fontSize: 12, marginTop: 8, textAlign: 'center' }}>상대방이 방 코드로 입장하면 자동 연결</Text>
+                    <Text style={{ color: '#888', fontSize: 12, marginTop: 8, textAlign: 'center' }}>상대방이 방 코드로 입장하면 자동 연결</Text>
+                    {!!iceState && <Text style={{ color: '#00AAFF', fontSize: 11, marginTop: 4 }}>ICE: {iceState}</Text>}
                   </View>
                 )}
                 {/* 상대방 영상 위 자막 오버레이 */}
@@ -816,7 +823,8 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
               {!remoteStream && (
                 <View style={styles.videoPlaceholder}>
                   <Text style={styles.videoPlaceholderText}>⏳ 연결 중...</Text>
-                  <Text style={{ color: '#666', fontSize: 12, marginTop: 8, textAlign: 'center' }}>상대방이 방 코드로 입장하면 자동 연결</Text>
+                  <Text style={{ color: '#888', fontSize: 12, marginTop: 8, textAlign: 'center' }}>상대방이 방 코드로 입장하면 자동 연결</Text>
+                  {!!iceState && <Text style={{ color: '#00AAFF', fontSize: 11, marginTop: 4 }}>ICE: {iceState}</Text>}
                 </View>
               )}
               {/* 받은 자막 오버레이 (하단) */}
