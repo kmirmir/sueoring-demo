@@ -100,6 +100,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const mediaRecorderRef   = useRef<MediaRecorder | null>(null);  // Whisper STT
   const currentAudioRef    = useRef<HTMLAudioElement | null>(null); // OpenAI TTS
   const sttActiveRef       = useRef(false);
+  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);  // ICE candidate 버퍼
   const animFrameRef    = useRef<number | null>(null);
   const workingCdnRef   = useRef<string>(CDN_PROVIDERS[0]);
   const currentRoomRef  = useRef('');
@@ -207,12 +208,13 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       else if (s === 'failed' || s === 'disconnected' || s === 'closed') handleDisconnected();
     };
 
-    // 원격 영상 스트림 수신
-    // streams[0]이 비어있는 브라우저 대응: 개별 track으로 MediaStream 직접 생성
+    // 원격 영상 스트림 수신 — ontrack은 offer/answer 완료 직후 발화 (ICE 이전)
+    // 스트림 도착을 connStatus 기준으로 삼아 양측 모두 안정적으로 '연결됨' 처리
     pc.ontrack = (event) => {
       const stream = event.streams[0] ?? new MediaStream([event.track]);
       remoteStreamRef.current = stream;
-      setRemoteStream(stream);  // state 변경 → useEffect 재실행 → video 연결
+      setRemoteStream(stream);
+      setConnStatus('connected');  // ICE 이벤트 미발화 브라우저 대응
     };
 
     // DataChannel 수신 (비창시자)
@@ -258,20 +260,37 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       const pc = pcRef.current;
       if (!pc) return;
       await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      // remote description 설정 후 버퍼에 쌓인 ICE candidate 드레인
+      for (const c of pendingCandidatesRef.current) {
+        try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch { /* 무시 */ }
+      }
+      pendingCandidatesRef.current = [];
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       socket.emit('room-answer', { roomCode: code, answer });
     });
 
-    // Answer 수신
+    // Answer 수신 (initiator)
     socket.on('room-answer', async ({ answer }: { answer: RTCSessionDescriptionInit }) => {
-      await pcRef.current?.setRemoteDescription(new RTCSessionDescription(answer));
+      const pc = pcRef.current;
+      if (!pc) return;
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      // remote description 설정 후 버퍼에 쌓인 ICE candidate 드레인
+      for (const c of pendingCandidatesRef.current) {
+        try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch { /* 무시 */ }
+      }
+      pendingCandidatesRef.current = [];
       setConnStatus('connected');
     });
 
-    // ICE Candidate 수신
-    socket.on('room-ice', ({ candidate }: { candidate: RTCIceCandidateInit }) => {
-      pcRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
+    // ICE Candidate 수신 — remote description 미설정 시 버퍼에 보관
+    socket.on('room-ice', async ({ candidate }: { candidate: RTCIceCandidateInit }) => {
+      const pc = pcRef.current;
+      if (!pc || !pc.remoteDescription) {
+        pendingCandidatesRef.current.push(candidate);
+        return;
+      }
+      try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch { /* 무시 */ }
     });
 
     // 파트너 퇴장
@@ -752,10 +771,10 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                     style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                   />
                 )}
-                {connStatus !== 'connected' && (
+                {!remoteStream && (
                   <View style={styles.videoPlaceholder}>
                     <Text style={styles.videoPlaceholderText}>⏳ 연결 중...</Text>
-                <Text style={{ color: '#666', fontSize: 12, marginTop: 8, textAlign: 'center' }}>상대방이 방 코드로 입장하면 자동 연결</Text>
+                    <Text style={{ color: '#666', fontSize: 12, marginTop: 8, textAlign: 'center' }}>상대방이 방 코드로 입장하면 자동 연결</Text>
                   </View>
                 )}
                 {/* 상대방 영상 위 자막 오버레이 */}
@@ -784,10 +803,10 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                   style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                 />
               )}
-              {connStatus !== 'connected' && (
+              {!remoteStream && (
                 <View style={styles.videoPlaceholder}>
                   <Text style={styles.videoPlaceholderText}>⏳ 연결 중...</Text>
-                <Text style={{ color: '#666', fontSize: 12, marginTop: 8, textAlign: 'center' }}>상대방이 방 코드로 입장하면 자동 연결</Text>
+                  <Text style={{ color: '#666', fontSize: 12, marginTop: 8, textAlign: 'center' }}>상대방이 방 코드로 입장하면 자동 연결</Text>
                 </View>
               )}
               {/* 받은 자막 오버레이 (하단) */}
