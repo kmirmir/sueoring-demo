@@ -293,7 +293,7 @@ io.on('connection', (socket) => {
       ws.send(JSON.stringify({
         type: 'session.update',
         session: {
-          type: 'conversation',
+          type: 'realtime',
           input_audio_format: 'pcm16',
           input_audio_transcription: { model: 'whisper-1', language: 'ko' },
           turn_detection: {
