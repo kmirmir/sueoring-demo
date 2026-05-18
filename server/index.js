@@ -290,9 +290,9 @@ io.on('connection', (socket) => {
       ws.send(JSON.stringify({
         type: 'session.update',
         session: {
-          type: 'transcription',          // GA API 필수 파라미터
+          type: 'transcription',
           input_audio_format: 'pcm16',
-          input_audio_transcription: { model: 'gpt-4o-transcribe' },
+          audio: { input: { transcription: { model: 'gpt-4o-transcribe' } } },
           turn_detection: {
             type: 'server_vad',
             threshold: 0.3,
