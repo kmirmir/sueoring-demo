@@ -182,8 +182,9 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
 
       setMessages(prev => [...prev, { text, from: 'partner', ts: Date.now() }]);
 
-      // 양측 모두 TTS 재생: 농인은 주변인이 들을 수 있게, 청인은 수어 내용을 음성으로
-      if (Platform.OS === 'web') {
+      // TTS: 청인이 농인의 수어(gesture)를 받을 때만 재생
+      // 농인이 청인의 음성(speech)을 받을 때는 WebRTC 오디오가 이미 들리므로 TTS 불필요
+      if (Platform.OS === 'web' && msg.type === 'gesture') {
         playOpenAITTS(text);
       }
     } catch { /* 무시 */ }
