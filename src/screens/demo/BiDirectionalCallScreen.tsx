@@ -647,7 +647,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       if (vadAvailable) hasSpeech = false;  // VAD 있을 때만 리셋
 
       if (!sttActiveRef.current || ttsPlayingRef.current) return;
-      if (e.data.size < 1000) return;  // 1000 bytes 미만만 차단 (모바일 압축 고려)
+      if (e.data.size < 500) return;   // 500 bytes 미만만 차단 (모바일 저비트레이트 대응)
       if (!speechDetected) return;     // VAD: 음성 없는 청크 전송 차단
 
       try {
@@ -697,8 +697,22 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       }
     };
 
+    // recorder 중단 시 VAD 정리
     recorder.addEventListener('stop', () => vadCleanup?.());
-    recorder.start(1500);  // 3초→1.5초: Whisper 전송 지연 단축
+    recorder.start(1500);
+
+    // 자가 복구 헬스체크: 6초마다 recorder 상태 확인, 비활성 시 재시작
+    const healthCheckId = setInterval(() => {
+      if (!sttActiveRef.current || ttsPlayingRef.current) return;
+      const rec = mediaRecorderRef.current;
+      if (!rec || rec.state === 'inactive') {
+        clearInterval(healthCheckId);
+        initSTT(); // 자동 재시작
+      }
+    }, 6000);
+
+    // recorder 정상 종료 시 헬스체크도 해제
+    recorder.addEventListener('stop', () => clearInterval(healthCheckId), { once: true });
   };
 
   // ── 서버 wake-up 핑 (Render 무료 슬립 대응) ─────────────
