@@ -388,6 +388,9 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     socket.on('room-partner-left', () => {
       setConnStatus('idle');
       setCurrentSub('상대방이 통화를 종료했습니다.');
+      // 청인 STT 중단
+      sttActiveRef.current = false;
+      try { mediaRecorderRef.current?.stop(); mediaRecorderRef.current = null; } catch { /* 무시 */ }
     });
 
     // 방 가득 참
@@ -598,12 +601,20 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
 
   // Whisper 환각 블랙리스트 (connectSocket의 realtime-transcript 핸들러에서도 사용)
   const STT_HALLUCINATIONS = [
-    'MBC 뉴스', 'KBS 뉴스', 'SBS 뉴스',
+    // 뉴스 앵커 환각
+    'MBC 뉴스', 'KBS 뉴스', 'SBS 뉴스', 'YTN 뉴스',
     '이덕영입니다', '이덕영 앵커', '앵커입니다', '기자입니다',
-    '구독과 좋아요', '구독 좋아요',
-    '시청해주셔서',
-    '안녕하십니까',
+    // 유튜브 자막 환각
+    '구독과 좋아요', '구독 좋아요', '구독', '좋아요',
+    '시청해주셔서', '시청해 주셔서',
     '저작권', '자막 제공', '번역 제공',
+    // 경제/시사 환각
+    '신선한 경제', '경제였습니다', '경제입니다',
+    '지금까지였습니다',
+    // 기타 빈출 환각
+    '안녕하십니까', '안녕하세요.',
+    '감사합니다.',
+    '음악',
   ];
 
   // ── OpenAI Whisper STT (청인 전용) — MediaRecorder 1.5초 청크 방식 ──
@@ -635,7 +646,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       }
 
       if (!sttActiveRef.current || ttsPlayingRef.current) return;
-      if (e.data.size < 500) { addLog(`⏭ 스킵(size<500: ${e.data.size}B)`); return; }
+      if (e.data.size < 2000) { addLog(`⏭ 스킵(size<2000: ${e.data.size}B)`); return; }
 
       try {
         setSttLive('인식 중...');
