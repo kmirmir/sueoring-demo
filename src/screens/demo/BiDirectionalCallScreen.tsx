@@ -552,12 +552,18 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   };
 
   // ── OpenAI Whisper STT (청인 전용) — MediaRecorder 3초 청크 방식 ──
+  // Whisper 환각 블랙리스트: 훈련 데이터에서 자주 나오는 오인식 문구
+  const STT_HALLUCINATIONS = [
+    'MBC', 'KBS', 'SBS', '뉴스', '이덕영', '앵커', '기자입니다',
+    '구독', '좋아요', '시청해주셔서', '감사합니다', '안녕하십니까',
+    '자막', '번역', '제작', '저작권',
+  ];
+
   const initSTT = () => {
     if (!localStreamRef.current) return;
     const audioTracks = localStreamRef.current.getAudioTracks();
     if (!audioTracks.length) return;
 
-    // 지원 MIME 타입 탐지 (Whisper가 모두 지원)
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
                    : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm'
                    : MediaRecorder.isTypeSupported('audio/mp4')  ? 'audio/mp4'
@@ -565,13 +571,40 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
 
     const audioStream = new MediaStream(audioTracks);
+
+    // ── VAD (음성 활성 감지): Web Audio API로 실제 음성 유무 확인 ──────
+    // 침묵 구간 청크를 Whisper에 보내지 않아 환각 발생 원천 차단
+    let hasSpeech = false;
+    let vadCleanup: (() => void) | null = null;
+    try {
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const source   = audioCtx.createMediaStreamSource(audioStream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      source.connect(analyser);
+      const buf = new Uint8Array(analyser.frequencyBinCount);
+      let rafId = 0;
+      const checkLevel = () => {
+        analyser.getByteFrequencyData(buf);
+        const avg = buf.reduce((a, b) => a + b, 0) / buf.length;
+        if (avg > 12) hasSpeech = true;   // threshold: 0~255 중 12 ≈ 아주 조용한 목소리
+        if (sttActiveRef.current) rafId = requestAnimationFrame(checkLevel);
+      };
+      checkLevel();
+      vadCleanup = () => { cancelAnimationFrame(rafId); audioCtx.close(); };
+    } catch { /* 브라우저 미지원 시 VAD 없이 진행 */ }
+
     const recorder = new MediaRecorder(audioStream, { mimeType });
     mediaRecorderRef.current = recorder;
     sttActiveRef.current = true;
 
     recorder.ondataavailable = async (e) => {
+      const speechDetected = hasSpeech;
+      hasSpeech = false;  // 다음 청크를 위해 리셋
+
       if (!sttActiveRef.current || ttsPlayingRef.current) return;
-      if (e.data.size < 1500) return; // 묵음/너무 짧은 청크 무시
+      if (e.data.size < 3000) return;       // 너무 짧은 청크 무시 (1500→3000 강화)
+      if (!speechDetected) return;          // VAD: 음성 없는 청크 전송 차단
 
       try {
         setSttLive('인식 중...');
@@ -588,20 +621,25 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
 
         if (!text) return;
 
+        // 환각 필터: 블랙리스트 키워드 포함 시 폐기
+        if (STT_HALLUCINATIONS.some(h => text.includes(h))) {
+          console.log('🚫 환각 감지 폐기:', text);
+          return;
+        }
+
         // 에코 감지: 최근 TTS로 재생한 텍스트와 일치하면 폐기
         const normalize = (s: string) => s.replace(/\s+/g, '');
         const isEcho = recentTTSTextsRef.current.some(t =>
           normalize(t).includes(normalize(text)) ||
           normalize(text).includes(normalize(t))
         );
-        if (isEcho) {
-          console.log('🔇 에코 감지 폐기:', text);
-          return;
-        }
+        if (isEcho) return;
 
         setMessages(prev => [...prev, { text, from: 'me', ts: Date.now() }]);
         if (dcRef.current?.readyState === 'open') {
           dcRef.current.send(JSON.stringify({ type: 'speech', text }));
+        } else if (socketRef.current?.connected) {
+          socketRef.current.emit('room-text', { roomCode: currentRoomRef.current, type: 'speech', text });
         }
       } catch (err) {
         console.error('Whisper STT error:', err);
@@ -609,7 +647,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       }
     };
 
-    // 3초마다 청크 수집 (지연 vs 정확도 균형)
+    recorder.addEventListener('stop', () => vadCleanup?.());
     recorder.start(3000);
   };
 

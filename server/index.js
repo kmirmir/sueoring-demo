@@ -83,7 +83,9 @@ app.post('/api/stt', upload.single('audio'), async (req, res) => {
     const transcription = await openai.audio.transcriptions.create({
       file,
       model: 'whisper-1',
-      language: 'ko',     // 한국어 고정으로 정확도 향상
+      language: 'ko',
+      temperature: 0,          // 0 = 결정론적 출력 → 환각 최소화
+      prompt: '안녕하세요.',   // 한국어 일상 대화 컨텍스트 힌트
     });
     res.json({ text: transcription.text || '' });
   } catch (err) {
