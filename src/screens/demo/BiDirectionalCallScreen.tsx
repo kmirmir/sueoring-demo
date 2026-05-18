@@ -795,15 +795,6 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
         </View>
       </View>
 
-      {/* ── 수신 자막 바 — 헤더 아래 고정 (통화 중에만 표시) ── */}
-      {phase === 'calling' && !!currentSub && (
-        <View style={styles.topSubBar}>
-          <Text style={styles.topSubText} numberOfLines={2}>{currentSub}</Text>
-          {isSpeaking && (
-            <Text style={styles.topSubTts}>🔊 음성 변환 중...</Text>
-          )}
-        </View>
-      )}
 
       {/* ── LOBBY ── */}
       {phase === 'lobby' && (
@@ -948,14 +939,12 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                     />
                   </>
                 )}
-                {/* 내 송신 상태 오버레이 (영상 위) */}
-                <View style={styles.splitMySub}>
-                  <Text style={styles.splitMySubText} numberOfLines={1}>
-                    {role === 'deaf'
-                      ? `🤟 ${gestureLabel || (mpLoaded ? '수어 인식 대기 중...' : 'AI 로딩 중...')}`
-                      : `🗣️ ${sttLive || '말하면 자동 인식됩니다...'}`}
-                  </Text>
-                </View>
+                {/* AI 로딩 중일 때만 상태 표시 */}
+                {role === 'deaf' && !mpLoaded && (
+                  <View style={styles.splitMySub}>
+                    <Text style={styles.splitMySubText}>⏳ AI 로딩 중...</Text>
+                  </View>
+                )}
               </View>
 
               {/* 구분선 */}
@@ -1001,78 +990,112 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                     <Text style={{ color: '#fff', fontSize: 18, fontWeight: 'bold' }}>▶ 탭하여 영상 재생</Text>
                   </TouchableOpacity>
                 )}
-                {/* 상대방 영상 위 자막 오버레이 */}
-                {!!currentSub && (
-                  <View style={styles.splitIncomingSub}>
-                    <Text style={styles.splitIncomingSubText}>{currentSub}</Text>
-                    {/* 청인: TTS 재생 중 표시 */}
-                    {role === 'hearing' && isSpeaking && (
+                {/* 상단 자막: 🤟 농인 수어 인식 결과 */}
+                {!!(role === 'deaf' ? gestureLabel : currentSub) && (
+                  <View style={styles.subOverlayTop}>
+                    <Text style={styles.subOverlayTopText} numberOfLines={2}>
+                      🤟 {role === 'deaf' ? gestureLabel : currentSub}
+                    </Text>
+                  </View>
+                )}
+                {/* 하단 자막: 🗣️ 청인 발화 인식 결과 */}
+                {!!(role === 'deaf' ? currentSub : sttLive) && (
+                  <View style={styles.subOverlayBottom}>
+                    <Text style={styles.subOverlayBottomText} numberOfLines={2}>
+                      🗣️ {role === 'deaf' ? currentSub : sttLive}
+                    </Text>
+                    {isSpeaking && (
                       <Text style={styles.ttsActiveText}>🔊 음성 변환 중...</Text>
-                    )}
-                    {/* 농인: 청인 음성 수신 안내 */}
-                    {role === 'deaf' && (
-                      <Text style={styles.ttsActiveText}>💬 청인 음성</Text>
                     )}
                   </View>
                 )}
               </View>
             </View>
           ) : (
-            /* ── 모바일: PiP 레이아웃 유지 ── */
+            /* ── 모바일: PiP 레이아웃
+               농인: 청인 영상(원격) 메인 + 본인 PiP
+               청인: 청인 영상(본인) 메인 + 농인(원격) PiP  ← Option B
+            ── */
             <View style={[styles.remoteVideoBox, { height: remoteVideoHeight }]}>
-              {Platform.OS === 'web' && !relayMode && (
-                <video
-                  ref={remoteVideoRef as any}
-                  autoPlay playsInline
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                />
+
+              {/* ── 메인 화면: 청인 영상 ── */}
+              {role === 'deaf' ? (
+                // 농인: 청인 원격 영상이 메인
+                Platform.OS === 'web' && !relayMode ? (
+                  <video ref={remoteVideoRef as any} autoPlay playsInline
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                ) : Platform.OS === 'web' && relayMode ? (
+                  <canvas ref={remoteCanvasRef as any}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' } as any} />
+                ) : null
+              ) : (
+                // 청인: 본인 영상이 메인 (Option B)
+                Platform.OS === 'web' ? (
+                  <video ref={localVideoRef as any} autoPlay playsInline muted
+                    style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }} />
+                ) : null
               )}
-              {/* 릴레이 모드: JPEG 프레임 캔버스 */}
-              {Platform.OS === 'web' && relayMode && (
-                <canvas
-                  ref={remoteCanvasRef as any}
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' } as any}
-                />
-              )}
-              {!remoteStream && !relayMode && (
+
+              {/* 연결 대기 플레이스홀더 (농인 화면에서 원격 미연결 시) */}
+              {role === 'deaf' && !remoteStream && !relayMode && (
                 <View style={styles.videoPlaceholder}>
                   <Text style={styles.videoPlaceholderText}>⏳ 연결 중...</Text>
                   <Text style={{ color: '#888', fontSize: 12, marginTop: 8, textAlign: 'center' }}>상대방이 방 코드로 입장하면 자동 연결</Text>
                   {!!iceState && <Text style={{ color: '#00AAFF', fontSize: 11, marginTop: 4 }}>ICE: {iceState}</Text>}
                 </View>
               )}
-              {/* 받은 자막 오버레이 (하단) */}
-              {!!currentSub && (
-                <View style={styles.incomingSub}>
-                  <Text style={styles.incomingSubText}>{currentSub}</Text>
+
+              {/* ── 메인 화면 상단 자막: 🤟 농인 수어 ── */}
+              {!!(role === 'deaf' ? gestureLabel : currentSub) && (
+                <View style={styles.subOverlayTop}>
+                  <Text style={styles.subOverlayTopText} numberOfLines={2}>
+                    🤟 {role === 'deaf' ? gestureLabel : currentSub}
+                  </Text>
+                </View>
+              )}
+
+              {/* ── 메인 화면 하단 자막: 🗣️ 청인 발화 ── */}
+              {!!(role === 'deaf' ? currentSub : sttLive) && (
+                <View style={styles.subOverlayBottom}>
+                  <Text style={styles.subOverlayBottomText} numberOfLines={2}>
+                    🗣️ {role === 'deaf' ? currentSub : sttLive}
+                  </Text>
                   {isSpeaking && (
                     <Text style={styles.ttsActiveText}>🔊 음성 변환 중...</Text>
                   )}
                 </View>
               )}
-              {/* 내 송신 상태 오버레이 (상단) */}
-              <View style={styles.mobileMySub}>
-                <Text style={styles.mobileMySubText} numberOfLines={1}>
-                  {role === 'deaf'
-                    ? `🤟 ${gestureLabel || (mpLoaded ? '수어 인식 대기' : 'AI 로딩 중...')}`
-                    : `🗣️ ${sttLive || '말하면 자동 인식됩니다'}`}
-                </Text>
-              </View>
+
+              {/* ── PiP: 상대방 영상 ── */}
               <View style={styles.localPip}>
-                {Platform.OS === 'web' && (
-                  <>
-                    <video
-                      ref={localVideoRef as any}
-                      autoPlay playsInline muted
-                      style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8, transform: 'scaleX(-1)' }}
-                    />
-                    <canvas
-                      ref={canvasRef as any}
-                      style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', borderRadius: 8 }}
-                    />
-                  </>
+                {role === 'deaf' ? (
+                  // 농인 PiP: 본인 영상 + 수어 캔버스
+                  Platform.OS === 'web' && (
+                    <>
+                      <video ref={localVideoRef as any} autoPlay playsInline muted
+                        style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8, transform: 'scaleX(-1)' }} />
+                      <canvas ref={canvasRef as any}
+                        style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', borderRadius: 8 }} />
+                    </>
+                  )
+                ) : (
+                  // 청인 PiP: 농인 원격 영상
+                  Platform.OS === 'web' && !relayMode ? (
+                    <video ref={remoteVideoRef as any} autoPlay playsInline
+                      style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8 }} />
+                  ) : Platform.OS === 'web' && relayMode ? (
+                    <canvas ref={remoteCanvasRef as any}
+                      style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8 } as any} />
+                  ) : null
                 )}
               </View>
+
+              {/* AI 로딩 표시 (농인 화면) */}
+              {role === 'deaf' && !mpLoaded && (
+                <View style={[styles.mobileMySub, { bottom: 0, top: undefined }]}>
+                  <Text style={styles.mobileMySubText}>⏳ AI 로딩 중...</Text>
+                </View>
+              )}
             </View>
           )}
 
@@ -1313,26 +1336,50 @@ const styles = StyleSheet.create({
     fontWeight: fonts.weights.bold,
     textAlign: 'center',
   },
-  splitIncomingSub: {
+  // 공통 자막 오버레이 (PC 우측 패널 / 모바일 메인 화면)
+  subOverlayTop: {
     position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: 'rgba(0,0,0,0.88)',
-    paddingVertical: 16,
-    paddingHorizontal: 20,
-    borderTopWidth: 3,
-    borderTopColor: '#00FF88',
+    top: 0, left: 0, right: 0,
+    backgroundColor: 'rgba(0,150,80,0.90)',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderBottomWidth: 3,
+    borderBottomColor: '#00FF88',
   },
-  splitIncomingSubText: {
+  subOverlayTopText: {
     color: '#FFFFFF',
-    fontSize: 30,
+    fontSize: 26,
     fontWeight: '900' as any,
     textAlign: 'center',
-    lineHeight: 40,
-    textShadowColor: 'rgba(0,0,0,0.8)',
-    textShadowOffset: { width: 1, height: 1 },
-    textShadowRadius: 4,
+    lineHeight: 34,
+  },
+  subOverlayBottom: {
+    position: 'absolute',
+    bottom: 0, left: 0, right: 0,
+    backgroundColor: 'rgba(0,0,0,0.88)',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderTopWidth: 3,
+    borderTopColor: '#60A5FA',
+  },
+  subOverlayBottomText: {
+    color: '#FFFFFF',
+    fontSize: 26,
+    fontWeight: '900' as any,
+    textAlign: 'center',
+    lineHeight: 34,
+  },
+
+  splitIncomingSub: {           // 기존 스타일 유지 (참조 보존)
+    position: 'absolute',
+    bottom: 0, left: 0, right: 0,
+    backgroundColor: 'rgba(0,0,0,0.88)',
+    paddingVertical: 16, paddingHorizontal: 20,
+    borderTopWidth: 3, borderTopColor: '#00FF88',
+  },
+  splitIncomingSubText: {
+    color: '#FFFFFF', fontSize: 30,
+    fontWeight: '900' as any, textAlign: 'center', lineHeight: 40,
   },
   ttsActiveText: {
     color: '#00FF88',
