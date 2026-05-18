@@ -663,6 +663,10 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
         );
         if (isEcho) return;
 
+        // 청인 화면에 본인 발화 확인 자막 표시 (5초 후 자동 소멸)
+        setSttLive(text);
+        setTimeout(() => setSttLive(prev => prev === text ? '' : prev), 5000);
+
         setMessages(prev => [...prev, { text, from: 'me', ts: Date.now() }]);
         if (dcRef.current?.readyState === 'open') {
           dcRef.current.send(JSON.stringify({ type: 'speech', text }));
