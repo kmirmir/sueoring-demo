@@ -335,13 +335,13 @@ const styles = StyleSheet.create({
   },
   footer: {
     paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.xl,
+    paddingVertical: spacing['2xl'],  // xl(32) → 2xl(48)
     alignItems: 'center',
   },
   footerText: {
     ...typography.body2,
     color: colors.text.secondary,
-    marginBottom: spacing.xs,
+    marginBottom: spacing.md,        // xs(4) → md(16)
   },
   footerSubtext: {
     ...typography.caption,
@@ -389,29 +389,29 @@ const styles = StyleSheet.create({
   },
   learningSection: {
     paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.xl,
+    paddingVertical: spacing['2xl'],  // xl(32) → 2xl(48)
   },
   learningCard: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: colors.background.elevated,
-    padding: spacing.lg,
+    padding: spacing.xl,             // lg(24) → xl(32)
     borderRadius: 12,
-    marginBottom: spacing.md,
+    marginBottom: spacing.lg,        // md(16) → lg(24)
     borderWidth: 1,
     borderColor: colors.border.default,
   },
   learningIcon: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+    width: 72,                       // 56 → 72
+    height: 72,
+    borderRadius: 36,
     backgroundColor: colors.primary.light + '20',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: spacing.md,
+    marginRight: spacing.lg,         // md(16) → lg(24)
   },
   learningEmoji: {
-    fontSize: 28,
+    fontSize: 36,                    // 28 → 36
   },
   learningContent: {
     flex: 1,
@@ -419,7 +419,7 @@ const styles = StyleSheet.create({
   learningTitle: {
     ...typography.h5,
     color: colors.text.primary,
-    marginBottom: spacing.xs,
+    marginBottom: spacing.sm,        // xs(4) → sm(8)
   },
   learningDescription: {
     ...typography.body2,
@@ -427,7 +427,7 @@ const styles = StyleSheet.create({
     lineHeight: fonts.lineHeights.normal * fonts.sizes.sm,
   },
   arrowIcon: {
-    fontSize: 32,
+    fontSize: 36,                    // 32 → 36
     color: colors.gray[500],
   },
 });
