@@ -37,6 +37,12 @@ const SIGNAL_SERVER =
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  // TURN 릴레이: STUN만으로 연결 안 되는 NAT 환경 대응 (symmetric NAT, 방화벽 등)
+  { urls: 'turn:openrelay.metered.ca:80',                  username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443',                 username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443?transport=tcp',   username: 'openrelayproject', credential: 'openrelayproject' },
 ];
 
 // ── 타입 ──────────────────────────────────────────────────
@@ -117,8 +123,10 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     dcRef.current?.close();
     pcRef.current?.close();
     localStreamRef.current?.getTracks().forEach(t => t.stop());
-    localStreamRef.current  = null;
-    remoteStreamRef.current = null;
+    localStreamRef.current     = null;
+    remoteStreamRef.current    = null;
+    pendingCandidatesRef.current = [];
+    setRemoteStream(null);
     socketRef.current?.emit('room-leave', { roomCode: currentRoomRef.current });
     socketRef.current?.disconnect();
     pcRef.current     = null;
@@ -583,17 +591,19 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   }, [phase]); // eslint-disable-line
 
   // 원격 스트림 도착 시 즉시 video에 연결
-  // (ontrack 타이밍이 phase useEffect 이후일 수 있으므로 별도 effect 필수)
   useEffect(() => {
     if (!remoteStream) return;
-    requestAnimationFrame(() => {
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = remoteStream;
-        // 농인 화면에서 청인 목소리(WebRTC 오디오) 정상 재생
-        // 에코 방지는 청인 마이크를 TTS 재생 중에만 뮤트하는 방식으로 처리
-        remoteVideoRef.current.play().catch(() => {});
-      }
-    });
+    const video = remoteVideoRef.current;
+    if (!video) return;
+    video.srcObject = remoteStream;
+    // 배포 환경 autoplay 정책: 음소거로 먼저 재생 후 언뮤트 (Chrome 정책 우회)
+    video.muted = true;
+    video.play()
+      .then(() => { video.muted = false; })
+      .catch(() => {
+        // play() 여전히 실패 시 음소거 유지 (영상은 보임, 음성은 TTS로 대체)
+        console.warn('Remote video autoplay blocked — staying muted');
+      });
   }, [remoteStream]);
 
   // ── 통화 종료 ────────────────────────────────────────────
