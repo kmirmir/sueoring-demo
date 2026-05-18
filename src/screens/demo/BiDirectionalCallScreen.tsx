@@ -190,14 +190,21 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       if (candidate) socketRef.current?.emit('room-ice', { roomCode: code, candidate });
     };
 
-    // ICE 연결 상태 변화 → 양쪽 모두 connStatus 업데이트
-    // room-answer 이벤트는 initiator에서만 처리되므로 이쪽으로 통일
+    // ICE 연결 상태 — 브라우저마다 발화 방식이 달라 두 이벤트 모두 등록
+    const handleConnected = () => setConnStatus('connected');
+    const handleDisconnected = () => setConnStatus('idle');
+
     pc.oniceconnectionstatechange = () => {
-      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
-        setConnStatus('connected');
-      } else if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-        setConnStatus('idle');
-      }
+      const s = pc.iceConnectionState;
+      if (s === 'connected' || s === 'completed') handleConnected();
+      else if (s === 'failed' || s === 'disconnected') handleDisconnected();
+    };
+
+    // connectionState는 ICE와 별개로 전체 연결 상태를 추적 (Safari 등 대응)
+    pc.onconnectionstatechange = () => {
+      const s = pc.connectionState;
+      if (s === 'connected') handleConnected();
+      else if (s === 'failed' || s === 'disconnected' || s === 'closed') handleDisconnected();
     };
 
     // 원격 영상 스트림 수신
@@ -246,9 +253,10 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       }
     });
 
-    // Offer 수신 → Answer 생성
+    // Offer 수신 → Answer 생성 (non-initiator)
     socket.on('room-offer', async ({ offer }: { offer: RTCSessionDescriptionInit }) => {
-      const pc = pcRef.current!;
+      const pc = pcRef.current;
+      if (!pc) return;
       await pc.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
@@ -500,9 +508,15 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     recorder.start(3000);
   };
 
+  // ── 서버 wake-up 핑 (Render 무료 슬립 대응) ─────────────
+  const pingServer = async () => {
+    try { await fetch(`${SIGNAL_SERVER}/health`); } catch { /* 무시 */ }
+  };
+
   // ── 방 만들기 ────────────────────────────────────────────
   const handleCreateRoom = async () => {
     setError('');
+    await pingServer(); // 서버 wake-up
     const code = generateRoomCode();
     setRoomCode(code);
     setIsCreator(true);
@@ -519,6 +533,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     const code = inputCode.trim().toUpperCase();
     if (code.length < 4) { setError('방 코드를 입력해주세요.'); return; }
     setError('');
+    await pingServer(); // 서버 wake-up
     setRoomCode(code);
     setIsCreator(false);
     try {
@@ -740,6 +755,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                 {connStatus !== 'connected' && (
                   <View style={styles.videoPlaceholder}>
                     <Text style={styles.videoPlaceholderText}>⏳ 연결 중...</Text>
+                <Text style={{ color: '#666', fontSize: 12, marginTop: 8, textAlign: 'center' }}>상대방이 방 코드로 입장하면 자동 연결</Text>
                   </View>
                 )}
                 {/* 상대방 영상 위 자막 오버레이 */}
@@ -771,6 +787,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
               {connStatus !== 'connected' && (
                 <View style={styles.videoPlaceholder}>
                   <Text style={styles.videoPlaceholderText}>⏳ 연결 중...</Text>
+                <Text style={{ color: '#666', fontSize: 12, marginTop: 8, textAlign: 'center' }}>상대방이 방 코드로 입장하면 자동 연결</Text>
                 </View>
               )}
               {/* 받은 자막 오버레이 (하단) */}
