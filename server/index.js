@@ -281,7 +281,7 @@ io.on('connection', (socket) => {
     if (existing) { try { existing.close(); } catch { /* 무시 */ } }
 
     const ws = new WebSocket(
-      'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview',
+      'wss://api.openai.com/v1/realtime?model=gpt-4o-transcribe',
       { headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` } }
     );
     realtimeSessions.set(socket.id, ws);
@@ -290,12 +290,12 @@ io.on('connection', (socket) => {
       ws.send(JSON.stringify({
         type: 'session.update',
         session: {
-          // modalities 기본값(['audio','text']) 사용 — text-only 설정 시 오디오 처리 안 됨
+          type: 'transcription',          // GA API 필수 파라미터
           input_audio_format: 'pcm16',
           input_audio_transcription: { model: 'gpt-4o-transcribe' },
           turn_detection: {
             type: 'server_vad',
-            threshold: 0.3,    // 0.5 → 0.3 (모바일 마이크 감도 향상)
+            threshold: 0.3,
             prefix_padding_ms: 300,
             silence_duration_ms: 800,
           },
