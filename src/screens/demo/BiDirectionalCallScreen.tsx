@@ -111,8 +111,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const ttsPlayingRef       = useRef(false);
   const recentTTSTextsRef   = useRef<string[]>([]);
   const ttsEndTimeRef       = useRef<number>(0);
-  // 제스처 전송 전역 쿨다운: 어떤 제스처든 전송 후 2초간 다음 전송 차단
-  const lastGestureSentTimeRef = useRef<number>(0);
+  // 제스처 전송 쿨다운은 initMediaPipe 내부 클로저 변수(lastSentTime)로 처리
   // 메시지 수신 중복 방지: 동일 메시지는 2초 이내 재수신 차단
   const lastReceivedRef     = useRef<{ text: string; ts: number }>({ text: '', ts: 0 });
   const socketRef       = useRef<Socket | null>(null);
@@ -437,6 +436,9 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     });
     hands.setOptions({ maxNumHands: 2, modelComplexity: 0, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
 
+    // 클로저 지역 변수: React ref 대신 사용 → onResults 콜백 내에서 완전히 독립적으로 동작
+    let lastSentTime = 0;  // 마지막 제스처 전송 시각 (ms)
+
     hands.onResults((results: any) => {
       if (!canvasRef.current || !localVideoRef.current) return;
       const canvas = canvasRef.current;
@@ -474,13 +476,12 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
         ctx.fillStyle = '#000';
         ctx.font = 'bold 18px Arial';
         ctx.fillText(gesture, bx + 8, by - 12);
-        // 전역 2초 쿨다운: 어떤 제스처든 마지막 전송 후 2초 이내 재전송 차단
-        // (시각적 gestureLabel은 위에서 이미 즉각 업데이트됨)
+        // 전역 2초 쿨다운: 클로저 지역 변수 사용 → React 렌더링과 무관하게 확실히 동작
         const now = Date.now();
-        const inCooldown = now - lastGestureSentTimeRef.current < 2000;
+        const inCooldown = now - lastSentTime < 2000;
 
         if (!inCooldown) {
-          lastGestureSentTimeRef.current = now;
+          lastSentTime = now;  // 클로저 변수 직접 갱신
           if (dcRef.current?.readyState === 'open') {
             dcRef.current.send(JSON.stringify({ type: 'gesture', text: gesture }));
           } else if (socketRef.current?.connected) {
