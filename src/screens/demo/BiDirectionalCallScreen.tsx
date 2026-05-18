@@ -618,6 +618,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                    : 'audio/ogg';
     const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
     const audioStream = new MediaStream(audioTracks);
+    addLog(`🎙️ STT 시작 | mime:${mimeType.split(';')[0].split('/')[1]}`);
 
     // VAD: 침묵 구간 청크를 Whisper에 보내지 않아 환각 원천 차단
     let hasSpeech = false;
@@ -637,33 +638,46 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       };
       checkLevel();
       vadCleanup = () => { cancelAnimationFrame(rafId); audioCtx.close(); };
-    } catch { hasSpeech = true; }
+      addLog('✅ VAD 활성');
+    } catch { hasSpeech = true; addLog('⚠️ VAD 미지원 — 항상 전송'); }
 
     const vadAvailable = vadCleanup !== null;
     const recorder = new MediaRecorder(audioStream, { mimeType });
     mediaRecorderRef.current = recorder;
     sttActiveRef.current = true;
     setSttReady(true);
-    addLog('🎙️ Whisper STT 시작');
 
+    let chunkCount = 0;
     recorder.ondataavailable = async (e) => {
+      chunkCount++;
       const speechDetected = vadAvailable ? hasSpeech : true;
       if (vadAvailable) hasSpeech = false;
+
+      // 청크마다 상태 로그 (처음 3개 + 이후 10개마다)
+      if (chunkCount <= 3 || chunkCount % 10 === 0) {
+        addLog(`📦 청크#${chunkCount} size:${e.data.size}B vad:${speechDetected} stt:${sttActiveRef.current} tts:${ttsPlayingRef.current}`);
+      }
+
       if (!sttActiveRef.current || ttsPlayingRef.current) return;
-      if (e.data.size < 500) return;
-      if (!speechDetected) return;
+      if (e.data.size < 500) { addLog(`⏭ 청크 스킵 (size<500: ${e.data.size}B)`); return; }
+      if (!speechDetected) { return; }
 
       try {
         setSttLive('인식 중...');
+        addLog('🌐 Whisper 요청 전송...');
         const formData = new FormData();
         formData.append('audio', e.data, `audio.${ext}`);
         const response = await fetch(`${SIGNAL_SERVER}/api/stt`, { method: 'POST', body: formData });
         const data = await response.json();
         const text = data.text?.trim();
         setSttLive('');
-        if (!text) return;
 
-        if (STT_HALLUCINATIONS.some(h => text.includes(h))) return;
+        if (!text) { addLog('⚪ 빈 결과'); return; }
+
+        if (STT_HALLUCINATIONS.some(h => text.includes(h))) {
+          addLog(`🚫 환각차단: "${text.substring(0, 15)}"`);
+          return;
+        }
 
         const normalize = (s: string) => s.replace(/\s+/g, '');
         const normText = normalize(text);
@@ -671,19 +685,23 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
           const normTts = normalize(t);
           return normTts === normText || normTts.includes(normText);
         });
-        if (isEcho) return;
+        if (isEcho) { addLog(`🔇 에코차단: "${text.substring(0, 15)}"`); return; }
 
-        addLog(`📝 인식: "${text.substring(0, 20)}"`);
+        addLog(`📝 인식성공: "${text.substring(0, 20)}"`);
         setSttLive(text);
         setTimeout(() => setSttLive(prev => prev === text ? '' : prev), 5000);
         setMessages(prev => [...prev, { text, from: 'me', ts: Date.now() }]);
         if (dcRef.current?.readyState === 'open') {
           dcRef.current.send(JSON.stringify({ type: 'speech', text }));
+          addLog('📡 DataChannel 전송');
         } else if (socketRef.current?.connected) {
           socketRef.current.emit('room-text', { roomCode: currentRoomRef.current, type: 'speech', text });
+          addLog('📡 Socket 전송');
+        } else {
+          addLog('❌ 전송채널 없음');
         }
       } catch (err) {
-        console.error('Whisper STT error:', err);
+        addLog(`❌ STT오류: ${err}`);
         setSttLive('');
       }
     };
@@ -691,8 +709,10 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     recorder.addEventListener('stop', () => {
       vadCleanup?.();
       setSttReady(false);
+      addLog('⏹ recorder 중단');
     });
     recorder.start(1500);
+    addLog('▶ recorder.start(1500ms)');
 
     // 자가 복구 헬스체크: 6초마다 확인, 비활성 시 자동 재시작
     const healthCheckId = setInterval(() => {
