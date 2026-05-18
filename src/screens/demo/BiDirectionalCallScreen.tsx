@@ -93,6 +93,8 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const [iceState, setIceState] = useState('');
   // 자동재생 차단 시 "탭하여 재생" 버튼 표시
   const [needsPlayTap, setNeedsPlayTap] = useState(false);
+  // 실제 전송된 제스처 자막 (전송 확인용 소형 표시)
+  const [sentGestureLabel, setSentGestureLabel] = useState('');
   // Socket.IO 릴레이 모드 (ICE 실패 시 폴백)
   const [relayMode, setRelayMode] = useState(false);
 
@@ -107,8 +109,8 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const ttsPlayingRef       = useRef(false);
   const recentTTSTextsRef   = useRef<string[]>([]);
   const ttsEndTimeRef       = useRef<number>(0);
-  // 제스처 발신 중복 방지: 동일 제스처는 2초 이내 재전송 차단
-  const lastSentGestureRef  = useRef<{ text: string; ts: number }>({ text: '', ts: 0 });
+  // 제스처 전송 전역 쿨다운: 어떤 제스처든 전송 후 2초간 다음 전송 차단
+  const lastGestureSentTimeRef = useRef<number>(0);
   // 메시지 수신 중복 방지: 동일 메시지는 2초 이내 재수신 차단
   const lastReceivedRef     = useRef<{ text: string; ts: number }>({ text: '', ts: 0 });
   const socketRef       = useRef<Socket | null>(null);
@@ -470,19 +472,21 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
         ctx.fillStyle = '#000';
         ctx.font = 'bold 18px Arial';
         ctx.fillText(gesture, bx + 8, by - 12);
-        // 발신 중복 방지: 동일 제스처는 2초 이내 재전송 차단
+        // 전역 2초 쿨다운: 어떤 제스처든 마지막 전송 후 2초 이내 재전송 차단
+        // (시각적 gestureLabel은 위에서 이미 즉각 업데이트됨)
         const now = Date.now();
-        const alreadySent =
-          gesture === lastSentGestureRef.current.text &&
-          now - lastSentGestureRef.current.ts < 2000;
+        const inCooldown = now - lastGestureSentTimeRef.current < 2000;
 
-        if (!alreadySent) {
-          lastSentGestureRef.current = { text: gesture, ts: now };
+        if (!inCooldown) {
+          lastGestureSentTimeRef.current = now;
           if (dcRef.current?.readyState === 'open') {
             dcRef.current.send(JSON.stringify({ type: 'gesture', text: gesture }));
           } else if (socketRef.current?.connected) {
             socketRef.current.emit('room-text', { roomCode: currentRoomRef.current, type: 'gesture', text: gesture });
           }
+          // 전송 확인 자막: 실제 전송된 제스처만 표시 (5초 후 자동 소멸)
+          setSentGestureLabel(gesture);
+          setTimeout(() => setSentGestureLabel(prev => prev === gesture ? '' : prev), 5000);
           setMessages(prev => {
             const last = prev[prev.length - 1];
             if (last && last.from === 'me' && last.text === gesture && now - last.ts < 2000) return prev;
@@ -1027,12 +1031,18 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                     <Text style={{ color: '#fff', fontSize: 18, fontWeight: 'bold' }}>▶ 탭하여 영상 재생</Text>
                   </TouchableOpacity>
                 )}
-                {/* 상단 자막: 🤟 농인 수어 인식 결과 */}
+                {/* 상단 자막: 🤟 농인 수어 인식 결과 (실시간) */}
                 {!!(role === 'deaf' ? gestureLabel : currentSub) && (
                   <View style={styles.subOverlayTop}>
                     <Text style={styles.subOverlayTopText} numberOfLines={2}>
                       🤟 {role === 'deaf' ? gestureLabel : currentSub}
                     </Text>
+                  </View>
+                )}
+                {/* 전송 확인 뱃지: 실제 전송된 수어 소형 표시 (농인 전용) */}
+                {role === 'deaf' && !!sentGestureLabel && (
+                  <View style={styles.sentBadge}>
+                    <Text style={styles.sentBadgeText}>📤 전송됨: {sentGestureLabel}</Text>
                   </View>
                 )}
                 {/* 하단 자막: 🗣️ 청인 발화 인식 결과 */}
@@ -1076,12 +1086,19 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                 ) : null
               )}
 
-              {/* ── 메인 화면 상단 자막: 🤟 농인 수어 ── */}
+              {/* ── 메인 화면 상단 자막: 🤟 농인 수어 (실시간) ── */}
               {!!(role === 'deaf' ? gestureLabel : currentSub) && (
                 <View style={styles.subOverlayTop}>
                   <Text style={styles.subOverlayTopText} numberOfLines={2}>
                     🤟 {role === 'deaf' ? gestureLabel : currentSub}
                   </Text>
+                </View>
+              )}
+
+              {/* 전송 확인 뱃지: 실제 전송된 수어 소형 표시 (농인 전용) */}
+              {role === 'deaf' && !!sentGestureLabel && (
+                <View style={styles.sentBadge}>
+                  <Text style={styles.sentBadgeText}>📤 전송됨: {sentGestureLabel}</Text>
                 </View>
               )}
 
@@ -1395,6 +1412,26 @@ const styles = StyleSheet.create({
     fontWeight: '900' as any,
     textAlign: 'center',
     lineHeight: 34,
+  },
+
+  // 전송 확인 뱃지 — 실제 전송된 수어 소형 표시
+  sentBadge: {
+    position: 'absolute',
+    top: 68,          // subOverlayTop 바로 아래
+    left: 12, right: 12,
+    zIndex: 25,       // subOverlayTop(20) 보다 높게
+    backgroundColor: 'rgba(30,58,138,0.88)',
+    borderRadius: 8,
+    paddingVertical: 5,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#60A5FA',
+  },
+  sentBadgeText: {
+    color: '#BAE6FD',
+    fontSize: 13,
+    fontWeight: '600' as any,
   },
 
   splitIncomingSub: {           // 기존 스타일 유지 (참조 보존)
