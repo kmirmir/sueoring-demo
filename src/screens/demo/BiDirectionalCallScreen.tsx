@@ -422,6 +422,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
 
     // ── Realtime STT 트랜스크립트 수신 (청인 전용) ──────────────
     socket.on('realtime-transcript', ({ type, text }: { type: 'start' | 'delta' | 'final'; text: string }) => {
+      console.log('[STT] realtime-transcript:', type, text ? text.substring(0, 40) : '');
       if (type === 'start') {
         setSttLive('');
       } else if (type === 'delta') {
