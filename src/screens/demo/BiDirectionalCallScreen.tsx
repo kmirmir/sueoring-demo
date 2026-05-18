@@ -91,6 +91,8 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   // ICE 상태 — 진단용 화면 표시
   const [iceState, setIceState] = useState('');
+  // 자동재생 차단 시 "탭하여 재생" 버튼 표시
+  const [needsPlayTap, setNeedsPlayTap] = useState(false);
 
   // Refs
   const localVideoRef   = useRef<HTMLVideoElement>(null);
@@ -228,11 +230,26 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
 
     // 원격 영상 스트림 수신
     pc.ontrack = (event) => {
-      console.log('ontrack fired, tracks:', event.streams[0]?.getTracks().length);
       const stream = event.streams[0] ?? new MediaStream([event.track]);
       remoteStreamRef.current = stream;
       setRemoteStream(stream);
       setConnStatus('connected');
+
+      // useEffect 타이밍 의존 없이 즉시 + rAF 후 양쪽에서 연결 시도
+      const tryConnect = () => {
+        const video = remoteVideoRef.current;
+        if (!video) return;
+        video.srcObject = stream;
+        video.muted = true;
+        video.play()
+          .then(() => {
+            video.muted = false;
+            setNeedsPlayTap(false);
+          })
+          .catch(() => setNeedsPlayTap(true));
+      };
+      tryConnect();
+      requestAnimationFrame(tryConnect);
     };
 
     // DataChannel 수신 (비창시자)
@@ -620,20 +637,18 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     }
   }, [phase]); // eslint-disable-line
 
-  // 원격 스트림 도착 시 즉시 video에 연결
+  // 원격 스트림 도착 시 video에 연결 (ontrack 직접 연결의 보조)
   useEffect(() => {
     if (!remoteStream) return;
     const video = remoteVideoRef.current;
     if (!video) return;
-    video.srcObject = remoteStream;
-    // 배포 환경 autoplay 정책: 음소거로 먼저 재생 후 언뮤트 (Chrome 정책 우회)
+    if (video.srcObject !== remoteStream) {
+      video.srcObject = remoteStream;
+    }
     video.muted = true;
     video.play()
-      .then(() => { video.muted = false; })
-      .catch(() => {
-        // play() 여전히 실패 시 음소거 유지 (영상은 보임, 음성은 TTS로 대체)
-        console.warn('Remote video autoplay blocked — staying muted');
-      });
+      .then(() => { video.muted = false; setNeedsPlayTap(false); })
+      .catch(() => setNeedsPlayTap(true));
   }, [remoteStream]);
 
   // ── 통화 종료 ────────────────────────────────────────────
@@ -659,8 +674,15 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
           <Text style={styles.backBtnText}>{phase === 'calling' ? '📴 종료' : '← 홈'}</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>📹 수어 양방향 통화</Text>
-        <View style={[styles.connDot, connStatus === 'connected' && styles.connDotOn,
-          connStatus === 'connecting' && styles.connDotWait]} />
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          {phase === 'calling' && !!iceState && (
+            <Text style={{ color: iceState === 'connected' || iceState === 'completed' ? '#00FF88' : iceState === 'failed' ? '#FF5555' : '#FFB800', fontSize: 10 }}>
+              {iceState}
+            </Text>
+          )}
+          <View style={[styles.connDot, connStatus === 'connected' && styles.connDotOn,
+            connStatus === 'connecting' && styles.connDotWait]} />
+        </View>
       </View>
 
       {/* ── 수신 자막 바 — 헤더 아래 고정 (통화 중에만 표시) ── */}
@@ -833,6 +855,18 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                     <Text style={{ color: '#888', fontSize: 12, marginTop: 8, textAlign: 'center' }}>상대방이 방 코드로 입장하면 자동 연결</Text>
                     {!!iceState && <Text style={{ color: '#00AAFF', fontSize: 11, marginTop: 4 }}>ICE: {iceState}</Text>}
                   </View>
+                )}
+                {/* 자동재생 차단 시 탭하여 재생 버튼 */}
+                {remoteStream && needsPlayTap && (
+                  <TouchableOpacity
+                    style={{ ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}
+                    onPress={() => {
+                      const v = remoteVideoRef.current as any;
+                      if (v) { v.muted = false; v.play().then(() => setNeedsPlayTap(false)).catch(() => {}); }
+                    }}
+                  >
+                    <Text style={{ color: '#fff', fontSize: 18, fontWeight: 'bold' }}>▶ 탭하여 영상 재생</Text>
+                  </TouchableOpacity>
                 )}
                 {/* 상대방 영상 위 자막 오버레이 */}
                 {!!currentSub && (
