@@ -106,7 +106,11 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const subClearTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ttsPlayingRef       = useRef(false);
   const recentTTSTextsRef   = useRef<string[]>([]);
-  const ttsEndTimeRef       = useRef<number>(0); // TTS 종료 시각 → 시간 기반 STT 차단용
+  const ttsEndTimeRef       = useRef<number>(0);
+  // 제스처 발신 중복 방지: 동일 제스처는 2초 이내 재전송 차단
+  const lastSentGestureRef  = useRef<{ text: string; ts: number }>({ text: '', ts: 0 });
+  // 메시지 수신 중복 방지: 동일 메시지는 2초 이내 재수신 차단
+  const lastReceivedRef     = useRef<{ text: string; ts: number }>({ text: '', ts: 0 });
   const socketRef       = useRef<Socket | null>(null);
   const pcRef           = useRef<RTCPeerConnection | null>(null);
   const dcRef           = useRef<RTCDataChannel | null>(null);
@@ -175,15 +179,23 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       const text = msg.text;
       if (!text?.trim()) return;
 
-      // 자막: 이전 timeout 취소 후 새로 시작 → 연속 메시지 때 조기 삭제 방지
+      const now = Date.now();
+
+      // 자막: 항상 업데이트 (타이머 리셋)
       if (subClearTimerRef.current) clearTimeout(subClearTimerRef.current);
       setCurrentSub(text);
       subClearTimerRef.current = setTimeout(() => setCurrentSub(''), 5000);
 
-      setMessages(prev => [...prev, { text, from: 'partner', ts: Date.now() }]);
+      // 수신 중복 방지: 동일 메시지를 2초 이내에 다시 받으면 로그/TTS 차단
+      const isDuplicate =
+        text === lastReceivedRef.current.text &&
+        now - lastReceivedRef.current.ts < 2000;
+      if (isDuplicate) return;
+
+      lastReceivedRef.current = { text, ts: now };
+      setMessages(prev => [...prev, { text, from: 'partner', ts: now }]);
 
       // TTS: 청인이 농인의 수어(gesture)를 받을 때만 재생
-      // 농인이 청인의 음성(speech)을 받을 때는 WebRTC 오디오가 이미 들리므로 TTS 불필요
       if (Platform.OS === 'web' && msg.type === 'gesture') {
         playOpenAITTS(text);
       }
@@ -458,14 +470,23 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
         ctx.fillStyle = '#000';
         ctx.font = 'bold 18px Arial';
         ctx.fillText(gesture, bx + 8, by - 12);
-        // DataChannel로 전송
-        if (dcRef.current?.readyState === 'open') {
-          dcRef.current.send(JSON.stringify({ type: 'gesture', text: gesture }));
+        // 발신 중복 방지: 동일 제스처는 2초 이내 재전송 차단
+        const now = Date.now();
+        const alreadySent =
+          gesture === lastSentGestureRef.current.text &&
+          now - lastSentGestureRef.current.ts < 2000;
+
+        if (!alreadySent) {
+          lastSentGestureRef.current = { text: gesture, ts: now };
+          if (dcRef.current?.readyState === 'open') {
+            dcRef.current.send(JSON.stringify({ type: 'gesture', text: gesture }));
+          } else if (socketRef.current?.connected) {
+            socketRef.current.emit('room-text', { roomCode: currentRoomRef.current, type: 'gesture', text: gesture });
+          }
           setMessages(prev => {
-            // 동일 제스처 연속 추가 방지 (1초 이내)
             const last = prev[prev.length - 1];
-            if (last && last.from === 'me' && last.text === gesture && Date.now() - last.ts < 1000) return prev;
-            return [...prev, { text: gesture, from: 'me', ts: Date.now() }];
+            if (last && last.from === 'me' && last.text === gesture && now - last.ts < 2000) return prev;
+            return [...prev, { text: gesture, from: 'me', ts: now }];
           });
         }
       } else {
