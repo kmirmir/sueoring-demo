@@ -290,7 +290,7 @@ io.on('connection', (socket) => {
     ws.on('open', () => {
       // transcription_session.update: flat 구조, session.update와 다름
       ws.send(JSON.stringify({
-        type: 'transcription_session.update',
+        type: 'session.update',
         session: {
           input_audio_format: 'pcm16',
           input_audio_transcription: { model: 'gpt-4o-transcribe' },
