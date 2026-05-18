@@ -758,13 +758,14 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       }
     });
 
-    // 8초 내 ICE 미연결 시 릴레이 모드 자동 전환
+    // 15초 내 ICE 미연결 시 릴레이 모드 자동 전환
+    // (모바일 LTE 등 느린 환경에서 ICE 협상이 10초+ 걸릴 수 있어 여유 확보)
     const relayTimer = setTimeout(() => {
       setRelayMode(prev => {
-        if (!prev) console.log('ICE timeout → relay mode');
+        if (!prev) console.log('ICE 15s timeout → relay mode');
         return true;
       });
-    }, 8000);
+    }, 15000);
 
     if (role === 'deaf') {
       initMediaPipe().catch(e => setError(`MediaPipe 로드 실패: ${e.message}`));
