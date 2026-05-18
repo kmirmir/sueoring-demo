@@ -525,11 +525,11 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       currentAudioRef.current = null;
     }
 
-    // 에코 텍스트 목록에 등록 (8초 후 자동 제거)
+    // 에코 텍스트 목록에 등록 (2초 후 자동 제거 — 과도한 차단 방지)
     recentTTSTextsRef.current.push(text);
     setTimeout(() => {
       recentTTSTextsRef.current = recentTTSTextsRef.current.filter(t => t !== text);
-    }, 8000);
+    }, 2000);
 
     setIsSpeaking(true);
     ttsPlayingRef.current = true;
@@ -562,11 +562,11 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
         ttsEndTimeRef.current = Date.now(); // 종료 시각 기록
         // 원격 오디오 언뮤트 복원
         if (remoteVideoRef.current) remoteVideoRef.current.muted = false;
-        // 2500ms 후 마이크 재활성화 + MediaRecorder 재시작 (잔향 완전 소멸 대기)
+        // 1000ms 후 마이크 재활성화 + MediaRecorder 재시작 (잔향 소멸 대기)
         setTimeout(() => {
           localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = true; });
           if (sttActiveRef.current) initSTT();
-        }, 2500);
+        }, 1000);
       };
       audio.onended = onFinish;
       audio.onerror = onFinish;
@@ -583,11 +583,15 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   };
 
   // ── OpenAI Whisper STT (청인 전용) — MediaRecorder 3초 청크 방식 ──
-  // Whisper 환각 블랙리스트: 훈련 데이터에서 자주 나오는 오인식 문구
+  // Whisper 환각 블랙리스트: 단일 일반 단어 제외, 복합 문구만 차단
+  // (감사합니다·좋아요 등 일상어는 제거 — 정상 발화 오차단 방지)
   const STT_HALLUCINATIONS = [
-    'MBC', 'KBS', 'SBS', '뉴스', '이덕영', '앵커', '기자입니다',
-    '구독', '좋아요', '시청해주셔서', '감사합니다', '안녕하십니까',
-    '자막', '번역', '제작', '저작권',
+    'MBC 뉴스', 'KBS 뉴스', 'SBS 뉴스',
+    '이덕영입니다', '이덕영 앵커', '앵커입니다', '기자입니다',
+    '구독과 좋아요', '구독 좋아요',
+    '시청해주셔서',
+    '안녕하십니까',
+    '저작권', '자막 제공', '번역 제공',
   ];
 
   const initSTT = () => {
@@ -664,12 +668,14 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
           return;
         }
 
-        // 에코 감지: 최근 TTS로 재생한 텍스트와 일치하면 폐기
+        // 에코 감지: TTS 재생 텍스트와 완전 일치하거나 TTS가 발화를 포함할 때만 차단
+        // (반대 방향 제거: 정상 발화가 TTS를 포함해도 차단하지 않음)
         const normalize = (s: string) => s.replace(/\s+/g, '');
-        const isEcho = recentTTSTextsRef.current.some(t =>
-          normalize(t).includes(normalize(text)) ||
-          normalize(text).includes(normalize(t))
-        );
+        const normText = normalize(text);
+        const isEcho = recentTTSTextsRef.current.some(t => {
+          const normTts = normalize(t);
+          return normTts === normText || normTts.includes(normText);
+        });
         if (isEcho) return;
 
         // 청인 화면에 본인 발화 확인 자막 표시 (5초 후 자동 소멸)
