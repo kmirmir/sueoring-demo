@@ -99,6 +99,8 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const [cooldownActive, setCooldownActive] = useState(false);
   // Socket.IO 릴레이 모드 (ICE 실패 시 폴백)
   const [relayMode, setRelayMode] = useState(false);
+  // STT 오디오 파이프라인 상태 (청인 전용 진단용)
+  const [sttReady, setSttReady] = useState(false);
 
   // Refs
   const localVideoRef   = useRef<HTMLVideoElement>(null);
@@ -648,27 +650,35 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   // 마이크 → AudioContext(24kHz) → PCM16 → base64 → Socket.IO → 서버 → OpenAI Realtime
   // 서버 VAD가 발화 구간 자동 감지, 트랜스크립트는 realtime-transcript 이벤트로 수신
   const initRealtimeSTT = () => {
-    if (!localStreamRef.current || !socketRef.current?.connected) return;
+    if (!localStreamRef.current || !socketRef.current?.connected) {
+      console.warn('[STT] 조건 미충족 — stream:', !!localStreamRef.current, 'connected:', socketRef.current?.connected);
+      return;
+    }
     sttActiveRef.current = true;
+    setSttReady(false);
     socketRef.current.emit('realtime-start');
+    console.log('[STT] realtime-start 전송');
 
     try {
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
       const source = audioCtx.createMediaStreamSource(localStreamRef.current);
       const processor = audioCtx.createScriptProcessor(4096, 1, 1);
-      // 무음 GainNode: processor를 audio 그래프에 연결(이벤트 유지)하되 스피커 출력 차단
       const silentGain = audioCtx.createGain();
       silentGain.gain.value = 0;
 
+      let firstFire = true;
       processor.onaudioprocess = (e: AudioProcessingEvent) => {
+        if (firstFire) {
+          firstFire = false;
+          setSttReady(true);
+          console.log('[STT] onaudioprocess 첫 발화 감지 — 파이프라인 정상');
+        }
         if (!sttActiveRef.current || ttsPlayingRef.current) return;
         const float32 = e.inputBuffer.getChannelData(0);
-        // Float32 → Int16 PCM16
         const int16 = new Int16Array(float32.length);
         for (let i = 0; i < float32.length; i++) {
           int16[i] = Math.max(-32768, Math.min(32767, Math.round(float32[i] * 32767)));
         }
-        // Int16 ArrayBuffer → base64
         const bytes = new Uint8Array(int16.buffer);
         let binary = '';
         for (let j = 0; j < bytes.byteLength; j += 8192) {
@@ -683,15 +693,22 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       realtimeAudioCtxRef.current = audioCtx;
       realtimeProcessorRef.current = processor;
 
-      if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+      console.log('[STT] AudioContext 상태:', audioCtx.state);
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume()
+          .then(() => console.log('[STT] AudioContext resumed'))
+          .catch(err => console.error('[STT] resume 실패:', err));
+      }
     } catch (err) {
-      console.error('Realtime STT init error:', err);
+      console.error('[STT] initRealtimeSTT 오류:', err);
       sttActiveRef.current = false;
+      setSttReady(false);
     }
   };
 
   const cleanupRealtimeSTT = () => {
     sttActiveRef.current = false;
+    setSttReady(false);
     socketRef.current?.emit('realtime-stop');
     try { realtimeProcessorRef.current?.disconnect(); } catch { /* 무시 */ }
     realtimeProcessorRef.current = null;
@@ -1152,6 +1169,32 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                 <View style={[styles.mobileMySub, { bottom: 0, top: undefined }]}>
                   <Text style={styles.mobileMySubText}>⏳ AI 로딩 중...</Text>
                 </View>
+              )}
+            </View>
+          )}
+
+          {/* 청인 전용: STT 상태 표시 + 수동 활성화 버튼 */}
+          {role === 'hearing' && (
+            <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#111827', paddingHorizontal: 12, paddingVertical: 6, gap: 8 }}>
+              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: sttReady ? '#00FF88' : '#FF5555' }} />
+              <Text style={{ color: sttReady ? '#00FF88' : '#FF9900', fontSize: 12, flex: 1 }}>
+                {sttReady ? '🎙️ STT 활성 (음성 인식 중)' : '🎙️ STT 비활성 — 아래 버튼을 탭하세요'}
+              </Text>
+              {!sttReady && (
+                <TouchableOpacity
+                  style={{ backgroundColor: '#1D4ED8', paddingVertical: 4, paddingHorizontal: 12, borderRadius: 6 }}
+                  onPress={() => {
+                    // 사용자 제스처로 AudioContext resume 후 재시작
+                    if (realtimeAudioCtxRef.current?.state === 'suspended') {
+                      realtimeAudioCtxRef.current.resume().then(() => console.log('[STT] 수동 resume 완료'));
+                    } else {
+                      cleanupRealtimeSTT();
+                      setTimeout(() => initRealtimeSTT(), 100);
+                    }
+                  }}
+                >
+                  <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>STT 시작</Text>
+                </TouchableOpacity>
               )}
             </View>
           )}
