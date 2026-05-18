@@ -291,8 +291,7 @@ io.on('connection', (socket) => {
         type: 'session.update',
         session: {
           type: 'transcription',
-          input_audio_format: 'pcm16',
-          audio: { input: { transcription: { model: 'gpt-4o-transcribe' } } },
+          audio: { input: { format: 'pcm16', transcription: { model: 'gpt-4o-transcribe' } } },
           turn_detection: {
             type: 'server_vad',
             threshold: 0.3,
