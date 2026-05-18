@@ -1051,18 +1051,17 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
             ── */
             <View style={[styles.remoteVideoBox, { height: remoteVideoHeight }]}>
 
-              {/* ── 메인 화면: 청인 영상 ── */}
+              {/* ── 메인 화면 ──
+                  농인: 본인 영상 메인 (손 크게 보여 수어 인식 확인 최적화) + 수어 캔버스
+                  청인: 본인 영상 메인 (Option B)
+              ── */}
               {role === 'deaf' ? (
-                // 농인: 청인 원격 영상이 메인 — 항상 DOM 유지 (오디오 보존)
                 Platform.OS === 'web' && (
                   <>
-                    <video ref={remoteVideoRef as any} autoPlay playsInline
-                      style={{ width: '100%', height: '100%', objectFit: 'cover',
-                               ...(relayMode ? { display: 'none' } : {}) } as any} />
-                    {relayMode && (
-                      <canvas ref={remoteCanvasRef as any}
-                        style={{ width: '100%', height: '100%', objectFit: 'cover' } as any} />
-                    )}
+                    <video ref={localVideoRef as any} autoPlay playsInline muted
+                      style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }} />
+                    <canvas ref={canvasRef as any}
+                      style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }} />
                   </>
                 )
               ) : (
@@ -1071,15 +1070,6 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                   <video ref={localVideoRef as any} autoPlay playsInline muted
                     style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }} />
                 ) : null
-              )}
-
-              {/* 연결 대기 플레이스홀더 (농인 화면에서 원격 미연결 시) */}
-              {role === 'deaf' && !remoteStream && !relayMode && (
-                <View style={styles.videoPlaceholder}>
-                  <Text style={styles.videoPlaceholderText}>⏳ 연결 중...</Text>
-                  <Text style={{ color: '#888', fontSize: 12, marginTop: 8, textAlign: 'center' }}>상대방이 방 코드로 입장하면 자동 연결</Text>
-                  {!!iceState && <Text style={{ color: '#00AAFF', fontSize: 11, marginTop: 4 }}>ICE: {iceState}</Text>}
-                </View>
               )}
 
               {/* ── 메인 화면 상단 자막: 🤟 농인 수어 ── */}
@@ -1104,30 +1094,19 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
               )}
 
               {/* ── PiP: 상대방 영상 ── */}
+              {/* 농인: 청인 원격 영상 PiP (항상 DOM 유지 — 오디오 보존)
+                  청인: 농인 원격 영상 PiP (항상 DOM 유지 — 오디오 보존) */}
               <View style={styles.localPip}>
-                {role === 'deaf' ? (
-                  // 농인 PiP: 본인 영상 + 수어 캔버스
-                  Platform.OS === 'web' && (
-                    <>
-                      <video ref={localVideoRef as any} autoPlay playsInline muted
-                        style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8, transform: 'scaleX(-1)' }} />
-                      <canvas ref={canvasRef as any}
-                        style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', borderRadius: 8 }} />
-                    </>
-                  )
-                ) : (
-                  // 청인 PiP: 농인 원격 영상 — 항상 DOM 유지 (오디오 보존)
-                  Platform.OS === 'web' && (
-                    <>
-                      <video ref={remoteVideoRef as any} autoPlay playsInline
-                        style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8,
-                                 ...(relayMode ? { display: 'none' } : {}) } as any} />
-                      {relayMode && (
-                        <canvas ref={remoteCanvasRef as any}
-                          style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8 } as any} />
-                      )}
-                    </>
-                  )
+                {Platform.OS === 'web' && (
+                  <>
+                    <video ref={remoteVideoRef as any} autoPlay playsInline
+                      style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8,
+                               ...(relayMode ? { display: 'none' } : {}) } as any} />
+                    {relayMode && (
+                      <canvas ref={remoteCanvasRef as any}
+                        style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8 } as any} />
+                    )}
+                  </>
                 )}
               </View>
 
