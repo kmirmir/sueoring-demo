@@ -587,24 +587,30 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       const checkLevel = () => {
         analyser.getByteFrequencyData(buf);
         const avg = buf.reduce((a, b) => a + b, 0) / buf.length;
-        if (avg > 12) hasSpeech = true;   // threshold: 0~255 중 12 ≈ 아주 조용한 목소리
+        if (avg > 8) hasSpeech = true;   // threshold: 8/255 ≈ 매우 조용한 목소리도 감지
         if (sttActiveRef.current) rafId = requestAnimationFrame(checkLevel);
       };
       checkLevel();
       vadCleanup = () => { cancelAnimationFrame(rafId); audioCtx.close(); };
-    } catch { /* 브라우저 미지원 시 VAD 없이 진행 */ }
+    } catch {
+      // VAD 미지원(iOS Safari 등) → hasSpeech를 항상 true로 유지 (차단 안 함)
+      hasSpeech = true;
+    }
+
+    const vadAvailable = vadCleanup !== null; // VAD 실제 동작 여부
 
     const recorder = new MediaRecorder(audioStream, { mimeType });
     mediaRecorderRef.current = recorder;
     sttActiveRef.current = true;
 
     recorder.ondataavailable = async (e) => {
-      const speechDetected = hasSpeech;
-      hasSpeech = false;  // 다음 청크를 위해 리셋
+      // VAD 미지원 시 항상 통과 / 지원 시 음성 감지 여부로 판단
+      const speechDetected = vadAvailable ? hasSpeech : true;
+      if (vadAvailable) hasSpeech = false;  // VAD 있을 때만 리셋
 
       if (!sttActiveRef.current || ttsPlayingRef.current) return;
-      if (e.data.size < 3000) return;       // 너무 짧은 청크 무시 (1500→3000 강화)
-      if (!speechDetected) return;          // VAD: 음성 없는 청크 전송 차단
+      if (e.data.size < 1000) return;  // 1000 bytes 미만만 차단 (모바일 압축 고려)
+      if (!speechDetected) return;     // VAD: 음성 없는 청크 전송 차단
 
       try {
         setSttLive('인식 중...');
