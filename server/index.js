@@ -51,7 +51,7 @@ app.get('/health', (req, res) => {
 app.get('/api/realtime-test', async (req, res) => {
   if (!process.env.OPENAI_API_KEY) return res.json({ ok: false, error: 'API key missing' });
   const ws = new WebSocket(
-    'wss://api.openai.com/v1/realtime?intent=transcription',
+    'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview',
     { headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` } }
   );
   const result = await new Promise((resolve) => {
@@ -280,20 +280,21 @@ io.on('connection', (socket) => {
     const existing = realtimeSessions.get(socket.id);
     if (existing) { try { existing.close(); } catch { /* 무시 */ } }
 
-    // GA Realtime Transcription API: intent=transcription
+    // SDK 기준: gpt-4o-realtime-preview가 session 모델 (gpt-4o-transcribe는 URL 불가)
     const ws = new WebSocket(
-      'wss://api.openai.com/v1/realtime?intent=transcription',
+      'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview',
       { headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` } }
     );
     realtimeSessions.set(socket.id, ws);
 
     ws.on('open', () => {
-      // transcription_session.update: flat 구조, session.update와 다름
+      // SDK TranscriptionSession 타입 기준 flat 구조
+      // session 안에 type 필드 없음 — 이벤트 최상위 type만 사용
       ws.send(JSON.stringify({
         type: 'session.update',
         session: {
           input_audio_format: 'pcm16',
-          input_audio_transcription: { model: 'gpt-4o-transcribe' },
+          input_audio_transcription: { model: 'whisper-1', language: 'ko' },
           turn_detection: {
             type: 'server_vad',
             threshold: 0.3,
