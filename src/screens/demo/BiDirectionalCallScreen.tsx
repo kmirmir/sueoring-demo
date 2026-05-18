@@ -237,14 +237,25 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   }, [setupDataChannel]);
 
   // ── Socket.IO 연결 & 시그널링 ────────────────────────────
-  const connectSocket = useCallback((code: string, _initiator: boolean) => {
-    const socket = io(SIGNAL_SERVER, { transports: ['websocket', 'polling'] });
+  const connectSocket = useCallback((code: string, _initiator: boolean, userRole: Role) => {
+    const socket = io(SIGNAL_SERVER, {
+      transports: ['websocket', 'polling'],
+      reconnection: false,  // 재연결 시 room-join 중복 방지 — 실패 시 UI 안내
+    });
     socketRef.current = socket;
     currentRoomRef.current = code;
 
     socket.on('connect', () => {
       console.log('🔌 Socket connected:', socket.id);
       setConnStatus('connecting');
+      // 소켓 연결 완료 후 room-join 전송 (버퍼 의존 제거 → 확실한 전달 보장)
+      socket.emit('room-join', { roomCode: code, role: userRole });
+      console.log('📤 room-join sent:', code, userRole);
+    });
+
+    socket.on('connect_error', (err) => {
+      console.error('Socket connect error:', err.message);
+      setError(`서버 연결 실패: ${err.message} — 페이지를 새로고침하거나 잠시 후 다시 시도하세요.`);
     });
 
     // 두 번째 참여자 입장 → initiator가 offer 생성
@@ -406,9 +417,11 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     setMpLoaded(true);
 
     const processFrame = async () => {
-      if (localVideoRef.current && handsRef.current) {
-        await handsRef.current.send({ image: localVideoRef.current });
-      }
+      try {
+        if (localVideoRef.current && handsRef.current) {
+          await handsRef.current.send({ image: localVideoRef.current });
+        }
+      } catch { /* WASM 에러 무시 — 프레임 루프 유지 */ }
       animFrameRef.current = requestAnimationFrame(processFrame);
     };
     processFrame();
@@ -542,8 +555,16 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   };
 
   // ── 서버 wake-up 핑 (Render 무료 슬립 대응) ─────────────
+  // 서버가 실제로 응답할 때까지 최대 20초 재시도
   const pingServer = async () => {
-    try { await fetch(`${SIGNAL_SERVER}/health`); } catch { /* 무시 */ }
+    for (let i = 0; i < 10; i++) {
+      try {
+        const r = await fetch(`${SIGNAL_SERVER}/health`, { signal: AbortSignal.timeout(3000) });
+        if (r.ok) { console.log('✅ 서버 응답 확인'); return; }
+      } catch { /* 무시 — 다음 시도 */ }
+      if (i < 9) await new Promise(r => setTimeout(r, 2000));
+    }
+    console.warn('서버 응답 없음 — 연결 시도 계속');
   };
 
   // ── 방 만들기 ────────────────────────────────────────────
@@ -556,8 +577,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     try {
       await startCamera();
       setPhase('waiting');
-      connectSocket(code, true);
-      socketRef.current?.emit('room-join', { roomCode: code, role });
+      connectSocket(code, true, role);  // role 전달 → connect 콜백에서 room-join 발송
     } catch { /* 에러는 startCamera에서 처리 */ }
   };
 
@@ -572,8 +592,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     try {
       await startCamera();
       setPhase('waiting');
-      connectSocket(code, false);
-      socketRef.current?.emit('room-join', { roomCode: code, role });
+      connectSocket(code, false, role);  // role 전달 → connect 콜백에서 room-join 발송
     } catch { /* 에러는 startCamera에서 처리 */ }
   };
 
@@ -712,6 +731,10 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
 
           <View style={styles.waitingInfo}>
             <Text style={styles.waitingTitle}>📡 파트너 대기 중...</Text>
+            {/* 소켓 연결 상태 진단 표시 */}
+            <Text style={{ color: connStatus === 'connecting' ? '#00FF88' : '#FFB800', fontSize: 12, marginBottom: 8, textAlign: 'center' }}>
+              {connStatus === 'connecting' ? '✅ 서버 연결됨 — 파트너 입장 대기 중' : '🟡 서버 연결 중...'}
+            </Text>
             <Text style={styles.waitingDesc}>
               아래 방 코드를 상대방에게 공유하세요.{'\n'}
               상대방이 입장하면 자동으로 통화가 시작됩니다.
