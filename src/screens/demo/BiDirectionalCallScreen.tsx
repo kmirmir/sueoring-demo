@@ -118,10 +118,12 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const pcRef           = useRef<RTCPeerConnection | null>(null);
   const dcRef           = useRef<RTCDataChannel | null>(null);
   const handsRef           = useRef<any>(null);
-  const mediaRecorderRef   = useRef<MediaRecorder | null>(null);  // Whisper STT
-  const currentAudioRef    = useRef<HTMLAudioElement | null>(null); // OpenAI TTS
-  const sttActiveRef       = useRef(false);
-  const recognitionRef     = useRef<any>(null);  // Web Speech API (실시간 디스플레이용)
+  const mediaRecorderRef       = useRef<MediaRecorder | null>(null);
+  const currentAudioRef        = useRef<HTMLAudioElement | null>(null); // OpenAI TTS
+  const sttActiveRef           = useRef(false);
+  const recognitionRef         = useRef<any>(null);
+  const realtimeAudioCtxRef    = useRef<AudioContext | null>(null);   // Realtime STT AudioContext
+  const realtimeProcessorRef   = useRef<ScriptProcessorNode | null>(null); // Realtime STT processor
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);  // ICE candidate 버퍼
   const animFrameRef    = useRef<number | null>(null);
   const workingCdnRef   = useRef<string>(CDN_PROVIDERS[0]);
@@ -136,6 +138,11 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     recognitionRef.current = null;
     try { mediaRecorderRef.current?.stop(); } catch { /* 무시 */ }
     mediaRecorderRef.current = null;
+    // Realtime STT 정리
+    try { realtimeProcessorRef.current?.disconnect(); } catch { /* 무시 */ }
+    realtimeProcessorRef.current = null;
+    try { realtimeAudioCtxRef.current?.close(); } catch { /* 무시 */ }
+    realtimeAudioCtxRef.current = null;
     if (currentAudioRef.current) { currentAudioRef.current.pause(); currentAudioRef.current = null; }
     handsRef.current?.close?.();
     dcRef.current?.close();
@@ -145,6 +152,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     remoteStreamRef.current    = null;
     pendingCandidatesRef.current = [];
     setRemoteStream(null);
+    socketRef.current?.emit('realtime-stop');
     socketRef.current?.emit('room-leave', { roomCode: currentRoomRef.current });
     socketRef.current?.disconnect();
     pcRef.current     = null;
@@ -404,6 +412,43 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     socket.on('room-text', ({ type, text }: { type: string; text: string }) => {
       onDataMessage(JSON.stringify({ type, text }));
     });
+
+    // ── Realtime STT 트랜스크립트 수신 (청인 전용) ──────────────
+    socket.on('realtime-transcript', ({ type, text }: { type: 'start' | 'delta' | 'final'; text: string }) => {
+      if (type === 'start') {
+        setSttLive('');
+      } else if (type === 'delta') {
+        setSttLive(prev => prev + text);
+      } else if (type === 'final') {
+        const finalText = text.trim();
+        setSttLive('');
+        if (!finalText) return;
+
+        // 환각 필터
+        if (STT_HALLUCINATIONS.some(h => finalText.includes(h))) {
+          console.log('🚫 환각 감지 폐기:', finalText);
+          return;
+        }
+
+        // 에코 감지
+        const normalize = (s: string) => s.replace(/\s+/g, '');
+        const normFinal = normalize(finalText);
+        const isEcho = recentTTSTextsRef.current.some(t => {
+          const normTts = normalize(t);
+          return normTts === normFinal || normTts.includes(normFinal);
+        });
+        if (isEcho) return;
+
+        setSttLive(finalText);
+        setTimeout(() => setSttLive(prev => prev === finalText ? '' : prev), 5000);
+        setMessages(prev => [...prev, { text: finalText, from: 'me', ts: Date.now() }]);
+        if (dcRef.current?.readyState === 'open') {
+          dcRef.current.send(JSON.stringify({ type: 'speech', text: finalText }));
+        } else if (socket.connected) {
+          socket.emit('room-text', { roomCode: code, type: 'speech', text: finalText });
+        }
+      }
+    });
   }, [createPeerConnection, setupDataChannel, onDataMessage]);
 
   // ── 카메라 시작 ──────────────────────────────────────────
@@ -537,12 +582,12 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     setIsSpeaking(true);
     ttsPlayingRef.current = true;
 
-    // ① 로컬 마이크 뮤트 (내 음성이 상대방으로 전달되지 않게)
+    // ① Realtime STT 일시 중단 (TTS 에코 차단)
+    cleanupRealtimeSTT();
+    // ② 로컬 마이크 뮤트
     localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = false; });
-    // ② 원격 오디오도 뮤트 (상대방 WebRTC 음성 + TTS 동시 출력 → 마이크 혼입 차단)
+    // ③ 원격 오디오 뮤트 (TTS 재생 중 마이크 혼입 차단)
     if (remoteVideoRef.current) remoteVideoRef.current.muted = true;
-    // ③ MediaRecorder stop → 버퍼 폐기
-    try { mediaRecorderRef.current?.stop(); mediaRecorderRef.current = null; } catch { /* 무시 */ }
 
     try {
       const response = await fetch(`${SIGNAL_SERVER}/api/tts`, {
@@ -562,13 +607,12 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
         currentAudioRef.current = null;
         setIsSpeaking(false);
         ttsPlayingRef.current = false;
-        ttsEndTimeRef.current = Date.now(); // 종료 시각 기록
-        // 원격 오디오 언뮤트 복원
+        ttsEndTimeRef.current = Date.now();
         if (remoteVideoRef.current) remoteVideoRef.current.muted = false;
-        // 1000ms 후 마이크 재활성화 + STT 재시작 (잔향 소멸 대기)
+        // 1000ms 후 마이크 재활성화 + Realtime STT 재시작 (잔향 소멸 대기)
         setTimeout(() => {
           localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = true; });
-          if (sttActiveRef.current) initSTT();
+          initRealtimeSTT();
         }, 1000);
       };
       audio.onended = onFinish;
@@ -581,13 +625,11 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       ttsEndTimeRef.current = Date.now();
       if (remoteVideoRef.current) remoteVideoRef.current.muted = false;
       localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = true; });
-      if (sttActiveRef.current) initSTT();
+      initRealtimeSTT();
     }
   };
 
-  // ── OpenAI Whisper STT (청인 전용) — MediaRecorder 1.5초 청크 방식 ──
-  // Whisper 환각 블랙리스트: 단일 일반 단어 제외, 복합 문구만 차단
-  // (감사합니다·좋아요 등 일상어는 제거 — 정상 발화 오차단 방지)
+  // Whisper 환각 블랙리스트 (connectSocket의 realtime-transcript 핸들러에서도 사용)
   const STT_HALLUCINATIONS = [
     'MBC 뉴스', 'KBS 뉴스', 'SBS 뉴스',
     '이덕영입니다', '이덕영 앵커', '앵커입니다', '기자입니다',
@@ -597,122 +639,59 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     '저작권', '자막 제공', '번역 제공',
   ];
 
-  const initSTT = () => {
-    if (!localStreamRef.current) return;
-    const audioTracks = localStreamRef.current.getAudioTracks();
-    if (!audioTracks.length) return;
-
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
-                   : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm'
-                   : MediaRecorder.isTypeSupported('audio/mp4')  ? 'audio/mp4'
-                   : 'audio/ogg';
-    const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
-
-    const audioStream = new MediaStream(audioTracks);
-
-    // ── VAD (음성 활성 감지): Web Audio API로 실제 음성 유무 확인 ──────
-    // 침묵 구간 청크를 Whisper에 보내지 않아 환각 발생 원천 차단
-    let hasSpeech = false;
-    let vadCleanup: (() => void) | null = null;
-    try {
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const source   = audioCtx.createMediaStreamSource(audioStream);
-      const analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 512;
-      source.connect(analyser);
-      const buf = new Uint8Array(analyser.frequencyBinCount);
-      let rafId = 0;
-      const checkLevel = () => {
-        analyser.getByteFrequencyData(buf);
-        const avg = buf.reduce((a, b) => a + b, 0) / buf.length;
-        if (avg > 8) hasSpeech = true;   // threshold: 8/255 ≈ 매우 조용한 목소리도 감지
-        if (sttActiveRef.current) rafId = requestAnimationFrame(checkLevel);
-      };
-      checkLevel();
-      vadCleanup = () => { cancelAnimationFrame(rafId); audioCtx.close(); };
-    } catch {
-      // VAD 미지원(iOS Safari 등) → hasSpeech를 항상 true로 유지 (차단 안 함)
-      hasSpeech = true;
-    }
-
-    const vadAvailable = vadCleanup !== null; // VAD 실제 동작 여부
-
-    const recorder = new MediaRecorder(audioStream, { mimeType });
-    mediaRecorderRef.current = recorder;
+  // ── OpenAI Realtime API STT (청인 전용) ─────────────────────
+  // 마이크 → AudioContext(24kHz) → PCM16 → base64 → Socket.IO → 서버 → OpenAI Realtime
+  // 서버 VAD가 발화 구간 자동 감지, 트랜스크립트는 realtime-transcript 이벤트로 수신
+  const initRealtimeSTT = () => {
+    if (!localStreamRef.current || !socketRef.current?.connected) return;
     sttActiveRef.current = true;
+    socketRef.current.emit('realtime-start');
 
-    recorder.ondataavailable = async (e) => {
-      // VAD 미지원 시 항상 통과 / 지원 시 음성 감지 여부로 판단
-      const speechDetected = vadAvailable ? hasSpeech : true;
-      if (vadAvailable) hasSpeech = false;  // VAD 있을 때만 리셋
+    try {
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      const source = audioCtx.createMediaStreamSource(localStreamRef.current);
+      const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+      // 무음 GainNode: processor를 audio 그래프에 연결(이벤트 유지)하되 스피커 출력 차단
+      const silentGain = audioCtx.createGain();
+      silentGain.gain.value = 0;
 
-      if (!sttActiveRef.current || ttsPlayingRef.current) return;
-      if (e.data.size < 500) return;   // 500 bytes 미만만 차단 (모바일 저비트레이트 대응)
-      if (!speechDetected) return;     // VAD: 음성 없는 청크 전송 차단
-
-      try {
-        setSttLive('인식 중...');
-        const formData = new FormData();
-        formData.append('audio', e.data, `audio.${ext}`);
-
-        const response = await fetch(`${SIGNAL_SERVER}/api/stt`, {
-          method: 'POST',
-          body: formData,
-        });
-        const data = await response.json();
-        const text = data.text?.trim();
-        setSttLive('');
-
-        if (!text) return;
-
-        // 환각 필터: 블랙리스트 키워드 포함 시 폐기
-        if (STT_HALLUCINATIONS.some(h => text.includes(h))) {
-          console.log('🚫 환각 감지 폐기:', text);
-          return;
+      processor.onaudioprocess = (e: AudioProcessingEvent) => {
+        if (!sttActiveRef.current || ttsPlayingRef.current) return;
+        const float32 = e.inputBuffer.getChannelData(0);
+        // Float32 → Int16 PCM16
+        const int16 = new Int16Array(float32.length);
+        for (let i = 0; i < float32.length; i++) {
+          int16[i] = Math.max(-32768, Math.min(32767, Math.round(float32[i] * 32767)));
         }
-
-        // 에코 감지: TTS 재생 텍스트와 완전 일치하거나 TTS가 발화를 포함할 때만 차단
-        // (반대 방향 제거: 정상 발화가 TTS를 포함해도 차단하지 않음)
-        const normalize = (s: string) => s.replace(/\s+/g, '');
-        const normText = normalize(text);
-        const isEcho = recentTTSTextsRef.current.some(t => {
-          const normTts = normalize(t);
-          return normTts === normText || normTts.includes(normText);
-        });
-        if (isEcho) return;
-
-        // 청인 화면에 본인 발화 확인 자막 표시 (5초 후 자동 소멸)
-        setSttLive(text);
-        setTimeout(() => setSttLive(prev => prev === text ? '' : prev), 5000);
-
-        setMessages(prev => [...prev, { text, from: 'me', ts: Date.now() }]);
-        if (dcRef.current?.readyState === 'open') {
-          dcRef.current.send(JSON.stringify({ type: 'speech', text }));
-        } else if (socketRef.current?.connected) {
-          socketRef.current.emit('room-text', { roomCode: currentRoomRef.current, type: 'speech', text });
+        // Int16 ArrayBuffer → base64
+        const bytes = new Uint8Array(int16.buffer);
+        let binary = '';
+        for (let j = 0; j < bytes.byteLength; j += 8192) {
+          binary += String.fromCharCode(...bytes.subarray(j, Math.min(j + 8192, bytes.byteLength)));
         }
-      } catch (err) {
-        console.error('Whisper STT error:', err);
-        setSttLive('');
-      }
-    };
+        socketRef.current?.emit('realtime-audio', { audio: btoa(binary) });
+      };
 
-    // recorder 중단 시 VAD 정리
-    recorder.addEventListener('stop', () => vadCleanup?.());
-    recorder.start(1500);
+      source.connect(processor);
+      processor.connect(silentGain);
+      silentGain.connect(audioCtx.destination);
+      realtimeAudioCtxRef.current = audioCtx;
+      realtimeProcessorRef.current = processor;
 
-    // 자가 복구 헬스체크: 6초마다 recorder 상태 확인, 비활성 시 재시작
-    const healthCheckId = setInterval(() => {
-      if (!sttActiveRef.current || ttsPlayingRef.current) return;
-      const rec = mediaRecorderRef.current;
-      if (!rec || rec.state === 'inactive') {
-        clearInterval(healthCheckId);
-        initSTT(); // 자동 재시작
-      }
-    }, 6000);
+      if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+    } catch (err) {
+      console.error('Realtime STT init error:', err);
+      sttActiveRef.current = false;
+    }
+  };
 
-    // recorder 정상 종료 시 헬스체크도 해제
-    recorder.addEventListener('stop', () => clearInterval(healthCheckId), { once: true });
+  const cleanupRealtimeSTT = () => {
+    sttActiveRef.current = false;
+    socketRef.current?.emit('realtime-stop');
+    try { realtimeProcessorRef.current?.disconnect(); } catch { /* 무시 */ }
+    realtimeProcessorRef.current = null;
+    try { realtimeAudioCtxRef.current?.close(); } catch { /* 무시 */ }
+    realtimeAudioCtxRef.current = null;
   };
 
   // ── 서버 wake-up 핑 (Render 무료 슬립 대응) ─────────────
@@ -806,7 +785,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     if (role === 'deaf') {
       initMediaPipe().catch(e => setError(`MediaPipe 로드 실패: ${e.message}`));
     } else {
-      initSTT();
+      initRealtimeSTT();
     }
 
     return () => clearTimeout(relayTimer);

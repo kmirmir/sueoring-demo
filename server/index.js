@@ -9,6 +9,7 @@ const socketIO = require('socket.io');
 const cors = require('cors');
 const multer = require('multer');
 const { OpenAI, toFile } = require('openai');
+const { WebSocket } = require('ws');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -31,6 +32,9 @@ const rooms = new Map(); // roomId -> { users: [socketId], callStarted: boolean 
 
 // 양방향 영상통화 방 코드 관리
 const codeRooms = new Map(); // roomCode -> { creator: socketId, partner: socketId|null, roles: {} }
+
+// OpenAI Realtime API WebSocket 세션 (소켓당 1개)
+const realtimeSessions = new Map(); // socketId -> WebSocket
 
 // 헬스체크 엔드포인트
 app.get('/health', (req, res) => {
@@ -246,6 +250,74 @@ io.on('connection', (socket) => {
     socket.to(`room-${roomCode}`).emit('room-text', { type, text });
   });
 
+  // ── OpenAI Realtime API STT 프록시 (청인 전용) ──────────────
+
+  socket.on('realtime-start', () => {
+    if (!process.env.OPENAI_API_KEY) return;
+
+    // 기존 세션 정리
+    const existing = realtimeSessions.get(socket.id);
+    if (existing) { try { existing.close(); } catch { /* 무시 */ } }
+
+    const ws = new WebSocket(
+      'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17',
+      { headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'OpenAI-Beta': 'realtime=v1' } }
+    );
+    realtimeSessions.set(socket.id, ws);
+
+    ws.on('open', () => {
+      ws.send(JSON.stringify({
+        type: 'session.update',
+        session: {
+          modalities: ['text'],
+          input_audio_format: 'pcm16',
+          input_audio_transcription: { model: 'whisper-1' },
+          turn_detection: {
+            type: 'server_vad',
+            threshold: 0.5,
+            prefix_padding_ms: 300,
+            silence_duration_ms: 600,
+            create_response: false,
+          },
+        },
+      }));
+      console.log(`🎙️  Realtime STT 시작: ${socket.id}`);
+    });
+
+    ws.on('message', (data) => {
+      try {
+        const event = JSON.parse(data.toString());
+        if (event.type === 'input_audio_buffer.speech_started') {
+          socket.emit('realtime-transcript', { type: 'start', text: '' });
+        } else if (event.type === 'conversation.item.input_audio_transcription.delta') {
+          socket.emit('realtime-transcript', { type: 'delta', text: event.delta || '' });
+        } else if (event.type === 'conversation.item.input_audio_transcription.completed') {
+          socket.emit('realtime-transcript', { type: 'final', text: event.transcript || '' });
+        } else if (event.type === 'error') {
+          console.error('Realtime API error:', JSON.stringify(event.error));
+        }
+      } catch { /* 무시 */ }
+    });
+
+    ws.on('error', (err) => console.error('Realtime WS error:', err.message));
+    ws.on('close', () => {
+      realtimeSessions.delete(socket.id);
+      console.log(`🔌 Realtime STT 종료: ${socket.id}`);
+    });
+  });
+
+  socket.on('realtime-audio', ({ audio }) => {
+    const ws = realtimeSessions.get(socket.id);
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio }));
+    }
+  });
+
+  socket.on('realtime-stop', () => {
+    const ws = realtimeSessions.get(socket.id);
+    if (ws) { try { ws.close(); } catch { /* 무시 */ } realtimeSessions.delete(socket.id); }
+  });
+
   // 방 나가기
   socket.on('room-leave', ({ roomCode }) => {
     socket.to(`room-${roomCode}`).emit('room-partner-left');
@@ -269,6 +341,10 @@ io.on('connection', (socket) => {
     if (user) {
       console.log(`👋 ${user.userName} 퇴장`);
     }
+
+    // Realtime STT 세션 정리
+    const realtimeWS = realtimeSessions.get(socket.id);
+    if (realtimeWS) { try { realtimeWS.close(); } catch { /* 무시 */ } realtimeSessions.delete(socket.id); }
 
     // 방 정리 및 상대방에게 알림
     cleanupUserRooms(socket.id);
