@@ -685,7 +685,6 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   useEffect(() => {
     if (phase !== 'calling') return;
 
-    // requestAnimationFrame: DOM이 완전히 그려진 뒤 video에 스트림 연결
     requestAnimationFrame(() => {
       if (localVideoRef.current && localStreamRef.current) {
         localVideoRef.current.srcObject = localStreamRef.current;
@@ -693,11 +692,21 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       }
     });
 
+    // 8초 내 ICE 미연결 시 릴레이 모드 자동 전환
+    const relayTimer = setTimeout(() => {
+      setRelayMode(prev => {
+        if (!prev) console.log('ICE timeout → relay mode');
+        return true;
+      });
+    }, 8000);
+
     if (role === 'deaf') {
       initMediaPipe().catch(e => setError(`MediaPipe 로드 실패: ${e.message}`));
     } else {
       initSTT();
     }
+
+    return () => clearTimeout(relayTimer);
   }, [phase]); // eslint-disable-line
 
   // 원격 스트림 도착 시 video에 연결 (ontrack 직접 연결의 보조)
@@ -957,14 +966,21 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
           ) : (
             /* ── 모바일: PiP 레이아웃 유지 ── */
             <View style={[styles.remoteVideoBox, { height: remoteVideoHeight }]}>
-              {Platform.OS === 'web' && (
+              {Platform.OS === 'web' && !relayMode && (
                 <video
                   ref={remoteVideoRef as any}
                   autoPlay playsInline
                   style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                 />
               )}
-              {!remoteStream && (
+              {/* 릴레이 모드: JPEG 프레임 캔버스 */}
+              {Platform.OS === 'web' && relayMode && (
+                <canvas
+                  ref={remoteCanvasRef as any}
+                  style={{ width: '100%', height: '100%', objectFit: 'cover' } as any}
+                />
+              )}
+              {!remoteStream && !relayMode && (
                 <View style={styles.videoPlaceholder}>
                   <Text style={styles.videoPlaceholderText}>⏳ 연결 중...</Text>
                   <Text style={{ color: '#888', fontSize: 12, marginTop: 8, textAlign: 'center' }}>상대방이 방 코드로 입장하면 자동 연결</Text>
