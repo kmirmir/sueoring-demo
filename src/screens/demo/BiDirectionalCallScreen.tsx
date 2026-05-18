@@ -34,11 +34,16 @@ const SIGNAL_SERVER =
     ? 'https://sueoring-server.onrender.com'  // 상용 서버 URL로 교체 필요
     : 'http://localhost:3001';
 
+// STUN: 공개 IP 획득 / TURN: AP Isolation·NAT 헤어핀 실패 시 릴레이
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
-  { urls: 'stun:stun3.l.google.com:19302' },
+  // metered.ca 공개 TURN — 무인증 오픈 릴레이 (데모용)
+  { urls: 'turn:openrelay.metered.ca:80',  username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+  // freestun — 무료 공개 TURN 백업
+  { urls: 'turn:freestun.net:3479', username: 'free', credential: 'free' },
+  { urls: 'turn:freestun.net:5350', username: 'free', credential: 'free' },
 ];
 
 // ── 타입 ──────────────────────────────────────────────────
@@ -758,6 +763,18 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       {/* ── CALLING ── */}
       {phase === 'calling' && (
         <View style={styles.callingContainer}>
+
+          {/* ICE 실패 안내 배너 */}
+          {iceState === 'failed' && (
+            <View style={{ backgroundColor: '#7F1D1D', padding: 12, alignItems: 'center' }}>
+              <Text style={{ color: '#FCA5A5', fontSize: 13, fontWeight: '700', textAlign: 'center' }}>
+                ⚠️ 기기 간 직접 연결 실패 (AP Isolation / NAT 차단)
+              </Text>
+              <Text style={{ color: '#FCA5A5', fontSize: 11, marginTop: 4, textAlign: 'center' }}>
+                한 기기를 모바일 데이터로 전환하거나, 같은 PC에서 두 탭으로 테스트하세요.
+              </Text>
+            </View>
+          )}
 
           {/* ── PC: 5:5 좌우 분할 ── */}
           {!isMobileWeb ? (
