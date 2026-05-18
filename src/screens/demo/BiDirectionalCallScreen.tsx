@@ -775,7 +775,8 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     return () => clearTimeout(relayTimer);
   }, [phase]); // eslint-disable-line
 
-  // 원격 스트림 도착 시 video에 연결 (ontrack 직접 연결의 보조)
+  // 원격 스트림 도착 또는 relay 모드 해제 시 video에 연결
+  // relayMode 해제 → 숨겨진 video 요소가 다시 보이므로 srcObject 재설정 필요
   useEffect(() => {
     if (!remoteStream) return;
     const video = remoteVideoRef.current;
@@ -787,7 +788,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     video.play()
       .then(() => { video.muted = false; setNeedsPlayTap(false); })
       .catch(() => setNeedsPlayTap(true));
-  }, [remoteStream]);
+  }, [remoteStream, relayMode]); // eslint-disable-line
 
   // ── 통화 종료 ────────────────────────────────────────────
   const handleEndCall = () => {
@@ -985,14 +986,17 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                     {role === 'deaf' ? '👤 상대방 (청인 · 자막 수신)' : '🤟 상대방 (농인 · 수어 송신)'}
                   </Text>
                 </View>
-                {Platform.OS === 'web' && !relayMode && (
+                {/* 원격 비디오: 항상 DOM에 유지 (오디오 스트림 보존)
+                    릴레이 모드에서는 display:none으로 숨기고 캔버스가 시각적 표시 담당 */}
+                {Platform.OS === 'web' && (
                   <video
                     ref={remoteVideoRef as any}
                     autoPlay playsInline
-                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover',
+                             ...(relayMode ? { display: 'none' } : {}) } as any}
                   />
                 )}
-                {/* 릴레이 모드: JPEG 프레임 캔버스 */}
+                {/* 릴레이 모드: JPEG 프레임 캔버스 (시각만, 오디오는 위 video가 담당) */}
                 {Platform.OS === 'web' && relayMode && (
                   <canvas
                     ref={remoteCanvasRef as any}
@@ -1048,14 +1052,18 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
 
               {/* ── 메인 화면: 청인 영상 ── */}
               {role === 'deaf' ? (
-                // 농인: 청인 원격 영상이 메인
-                Platform.OS === 'web' && !relayMode ? (
-                  <video ref={remoteVideoRef as any} autoPlay playsInline
-                    style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                ) : Platform.OS === 'web' && relayMode ? (
-                  <canvas ref={remoteCanvasRef as any}
-                    style={{ width: '100%', height: '100%', objectFit: 'cover' } as any} />
-                ) : null
+                // 농인: 청인 원격 영상이 메인 — 항상 DOM 유지 (오디오 보존)
+                Platform.OS === 'web' && (
+                  <>
+                    <video ref={remoteVideoRef as any} autoPlay playsInline
+                      style={{ width: '100%', height: '100%', objectFit: 'cover',
+                               ...(relayMode ? { display: 'none' } : {}) } as any} />
+                    {relayMode && (
+                      <canvas ref={remoteCanvasRef as any}
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' } as any} />
+                    )}
+                  </>
+                )
               ) : (
                 // 청인: 본인 영상이 메인 (Option B)
                 Platform.OS === 'web' ? (
@@ -1107,14 +1115,18 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                     </>
                   )
                 ) : (
-                  // 청인 PiP: 농인 원격 영상
-                  Platform.OS === 'web' && !relayMode ? (
-                    <video ref={remoteVideoRef as any} autoPlay playsInline
-                      style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8 }} />
-                  ) : Platform.OS === 'web' && relayMode ? (
-                    <canvas ref={remoteCanvasRef as any}
-                      style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8 } as any} />
-                  ) : null
+                  // 청인 PiP: 농인 원격 영상 — 항상 DOM 유지 (오디오 보존)
+                  Platform.OS === 'web' && (
+                    <>
+                      <video ref={remoteVideoRef as any} autoPlay playsInline
+                        style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8,
+                                 ...(relayMode ? { display: 'none' } : {}) } as any} />
+                      {relayMode && (
+                        <canvas ref={remoteCanvasRef as any}
+                          style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8 } as any} />
+                      )}
+                    </>
+                  )
                 )}
               </View>
 
