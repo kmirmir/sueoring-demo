@@ -16,10 +16,10 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 
 const app = express();
 const server = http.createServer(app);
 const io = socketIO(server, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST']
-  }
+  cors: { origin: '*', methods: ['GET', 'POST'] },
+  // Render 프록시 60초 타임아웃 대응: ping으로 연결 유지
+  pingInterval: 25000,
+  pingTimeout: 10000,
 });
 
 app.use(cors());
@@ -232,6 +232,16 @@ io.on('connection', (socket) => {
   // ICE Candidate 중계
   socket.on('room-ice', ({ roomCode, candidate }) => {
     socket.to(`room-${roomCode}`).emit('room-ice', { candidate });
+  });
+
+  // 영상 프레임 릴레이 (ICE 실패 시 Socket.IO 경유 폴백)
+  socket.on('room-frame', ({ roomCode, frame }) => {
+    socket.to(`room-${roomCode}`).emit('room-frame', { frame });
+  });
+
+  // 텍스트 릴레이 (DataChannel 불가 시 Socket.IO 경유 폴백)
+  socket.on('room-text', ({ roomCode, type, text }) => {
+    socket.to(`room-${roomCode}`).emit('room-text', { type, text });
   });
 
   // 방 나가기

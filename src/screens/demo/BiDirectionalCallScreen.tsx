@@ -93,10 +93,13 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const [iceState, setIceState] = useState('');
   // 자동재생 차단 시 "탭하여 재생" 버튼 표시
   const [needsPlayTap, setNeedsPlayTap] = useState(false);
+  // Socket.IO 릴레이 모드 (ICE 실패 시 폴백)
+  const [relayMode, setRelayMode] = useState(false);
 
   // Refs
   const localVideoRef   = useRef<HTMLVideoElement>(null);
   const remoteVideoRef  = useRef<HTMLVideoElement>(null);
+  const remoteCanvasRef = useRef<HTMLCanvasElement>(null);  // 릴레이 모드 수신 캔버스
   const canvasRef       = useRef<HTMLCanvasElement>(null);
   const localStreamRef  = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
@@ -211,13 +214,18 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       if (candidate) socketRef.current?.emit('room-ice', { roomCode: code, candidate });
     };
 
-    // ICE 연결 상태 — 진단용 텍스트 + connStatus 양쪽 업데이트
+    // ICE 연결 상태 — 진단용 텍스트 + connStatus + 릴레이 폴백
     pc.oniceconnectionstatechange = () => {
       const s = pc.iceConnectionState;
       console.log('ICE state:', s);
       setIceState(s);
-      if (s === 'connected' || s === 'completed') setConnStatus('connected');
-      else if (s === 'failed' || s === 'disconnected') setConnStatus('idle');
+      if (s === 'connected' || s === 'completed') {
+        setConnStatus('connected');
+        setRelayMode(false);
+      } else if (s === 'failed' || s === 'disconnected') {
+        setConnStatus('idle');
+        setRelayMode(true);  // ICE 실패 → Socket.IO 릴레이 모드 전환
+      }
     };
 
     // connectionState (Safari 등 대응)
@@ -262,22 +270,29 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const connectSocket = useCallback((code: string, _initiator: boolean, userRole: Role) => {
     const socket = io(SIGNAL_SERVER, {
       transports: ['websocket', 'polling'],
-      reconnection: false,  // 재연결 시 room-join 중복 방지 — 실패 시 UI 안내
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionAttempts: 10,
     });
     socketRef.current = socket;
     currentRoomRef.current = code;
 
-    socket.on('connect', () => {
+    // connect / reconnect 모두 처리 — 재연결 시에도 room-join 재전송
+    const onConnected = () => {
       console.log('🔌 Socket connected:', socket.id);
       setConnStatus('connecting');
-      // 소켓 연결 완료 후 room-join 전송 (버퍼 의존 제거 → 확실한 전달 보장)
       socket.emit('room-join', { roomCode: code, role: userRole });
-      console.log('📤 room-join sent:', code, userRole);
+    };
+    socket.on('connect', onConnected);
+    socket.on('reconnect', onConnected);
+
+    socket.on('disconnect', (reason) => {
+      console.warn('Socket disconnected:', reason);
+      // 일시적 끊김 — 재연결 대기 (자동 재연결 활성화되어 있음)
     });
 
     socket.on('connect_error', (err) => {
       console.error('Socket connect error:', err.message);
-      setError(`서버 연결 실패: ${err.message} — 페이지를 새로고침하거나 잠시 후 다시 시도하세요.`);
     });
 
     // 두 번째 참여자 입장 → initiator가 offer 생성
@@ -348,7 +363,29 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
 
     // 방 가득 참
     socket.on('room-full', () => setError('이미 2명이 참여한 방입니다.'));
-  }, [createPeerConnection, setupDataChannel]);
+
+    // ── Socket.IO 릴레이 폴백 (ICE 실패 시) ─────────────────
+    // 원격 영상 프레임 수신 → remoteCanvasRef에 그리기
+    socket.on('room-frame', ({ frame }: { frame: ArrayBuffer }) => {
+      const canvas = remoteCanvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      const blob = new Blob([frame], { type: 'image/jpeg' });
+      createImageBitmap(blob).then(bitmap => {
+        canvas.width  = bitmap.width;
+        canvas.height = bitmap.height;
+        ctx.drawImage(bitmap, 0, 0);
+        setRelayMode(true);   // 프레임 수신되면 릴레이 모드 활성
+        setConnStatus('connected');
+      }).catch(() => {});
+    });
+
+    // 텍스트 수신 (DataChannel 대체)
+    socket.on('room-text', ({ type, text }: { type: string; text: string }) => {
+      onDataMessage(JSON.stringify({ type, text }));
+    });
+  }, [createPeerConnection, setupDataChannel, onDataMessage]);
 
   // ── 카메라 시작 ──────────────────────────────────────────
   const startCamera = async () => {
@@ -618,6 +655,32 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     } catch { /* 에러는 startCamera에서 처리 */ }
   };
 
+  // ── 릴레이 모드: 로컬 영상을 JPEG 프레임으로 소켓 전송 ──────
+  useEffect(() => {
+    if (!relayMode || phase !== 'calling') return;
+    const captureCanvas = document.createElement('canvas');
+    captureCanvas.width = 320; captureCanvas.height = 240;
+    const ctx = captureCanvas.getContext('2d');
+    if (!ctx) return;
+
+    const loop = setInterval(() => {
+      const video = localVideoRef.current;
+      if (!video || video.readyState < 2) return;
+      ctx.save();
+      ctx.translate(320, 0); ctx.scale(-1, 1);  // 미러 반전
+      ctx.drawImage(video, 0, 0, 320, 240);
+      ctx.restore();
+      captureCanvas.toBlob(blob => {
+        if (!blob || !socketRef.current?.connected) return;
+        blob.arrayBuffer().then(buf => {
+          socketRef.current?.emit('room-frame', { roomCode: currentRoomRef.current, frame: buf });
+        });
+      }, 'image/jpeg', 0.45);
+    }, 150); // ~6fps
+
+    return () => clearInterval(loop);
+  }, [relayMode, phase]); // eslint-disable-line
+
   // calling 단계 진입 시: 로컬 PiP 스트림 재연결 + 역할별 기능 초기화
   useEffect(() => {
     if (phase !== 'calling') return;
@@ -842,14 +905,21 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                     {role === 'deaf' ? '👤 상대방 (청인 · 자막 수신)' : '🤟 상대방 (농인 · 수어 송신)'}
                   </Text>
                 </View>
-                {Platform.OS === 'web' && (
+                {Platform.OS === 'web' && !relayMode && (
                   <video
                     ref={remoteVideoRef as any}
                     autoPlay playsInline
                     style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                   />
                 )}
-                {!remoteStream && (
+                {/* 릴레이 모드: JPEG 프레임 캔버스 */}
+                {Platform.OS === 'web' && relayMode && (
+                  <canvas
+                    ref={remoteCanvasRef as any}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' } as any}
+                  />
+                )}
+                {!remoteStream && !relayMode && (
                   <View style={styles.videoPlaceholder}>
                     <Text style={styles.videoPlaceholderText}>⏳ 연결 중...</Text>
                     <Text style={{ color: '#888', fontSize: 12, marginTop: 8, textAlign: 'center' }}>상대방이 방 코드로 입장하면 자동 연결</Text>
