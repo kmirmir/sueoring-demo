@@ -811,6 +811,22 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
           </TouchableOpacity>
 
           {!!error && <Text style={styles.errorText}>{error}</Text>}
+
+          {/* 네트워크 환경 주의사항 */}
+          <View style={styles.networkNotice}>
+            <Text style={styles.networkNoticeTitle}>📡 네트워크 환경 안내</Text>
+            <View style={styles.networkNoticeRow}>
+              <Text style={styles.networkNoticeBadge}>⚠️ 제한</Text>
+              <Text style={styles.networkNoticeText}>SKT 사내망 WiFi — WebRTC P2P 차단됨{'\n'}(저화질 릴레이 모드로 자동 전환)</Text>
+            </View>
+            <View style={styles.networkNoticeRow}>
+              <Text style={styles.networkNoticeBadge}>✅ 권장</Text>
+              <Text style={styles.networkNoticeText}>모바일 핫스팟 — WebRTC 정상 동작{'\n'}(고화질 P2P 직접 연결)</Text>
+            </View>
+            <Text style={styles.networkNoticeHint}>
+              💡 Demo 시: 모바일 핫스팟 생성 후 PC WiFi를 핫스팟으로 연결하세요
+            </Text>
+          </View>
         </ScrollView>
       )}
 
@@ -1136,6 +1152,30 @@ const styles = StyleSheet.create({
   },
   joinBtnText: { color: '#FFFFFF', fontSize: fonts.sizes.lg, fontWeight: fonts.weights.bold },
   errorText: { color: '#FF5555', marginTop: spacing.md, textAlign: 'center' },
+
+  // 네트워크 안내
+  networkNotice: {
+    width: '100%', marginTop: spacing.xl,
+    backgroundColor: '#111827', borderRadius: 12,
+    padding: spacing.lg, borderWidth: 1, borderColor: '#374151',
+  },
+  networkNoticeTitle: {
+    color: '#9CA3AF', fontSize: fonts.sizes.sm, fontWeight: fonts.weights.semibold,
+    marginBottom: spacing.md, textAlign: 'center',
+  },
+  networkNoticeRow: {
+    flexDirection: 'row', alignItems: 'flex-start', marginBottom: spacing.sm, gap: 8,
+  },
+  networkNoticeBadge: {
+    fontSize: fonts.sizes.sm, width: 60, flexShrink: 0,
+  },
+  networkNoticeText: {
+    color: '#D1D5DB', fontSize: fonts.sizes.sm, flex: 1, lineHeight: 20,
+  },
+  networkNoticeHint: {
+    color: '#60A5FA', fontSize: 11, marginTop: spacing.sm,
+    textAlign: 'center', lineHeight: 17,
+  },
 
   // ── Waiting ──
   waitingContainer: { flex: 1, padding: spacing.lg },
