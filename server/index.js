@@ -51,8 +51,8 @@ app.get('/health', (req, res) => {
 app.get('/api/realtime-test', async (req, res) => {
   if (!process.env.OPENAI_API_KEY) return res.json({ ok: false, error: 'API key missing' });
   const ws = new WebSocket(
-    'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview',
-    { headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'OpenAI-Beta': 'realtime=v1' } }
+    'wss://api.openai.com/v1/realtime?intent=transcription',
+    { headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` } }
   );
   const result = await new Promise((resolve) => {
     const timer = setTimeout(() => { ws.terminate(); resolve({ ok: false, error: 'timeout (5s)' }); }, 5000);
@@ -280,18 +280,20 @@ io.on('connection', (socket) => {
     const existing = realtimeSessions.get(socket.id);
     if (existing) { try { existing.close(); } catch { /* 무시 */ } }
 
+    // GA Realtime Transcription API: intent=transcription
     const ws = new WebSocket(
-      'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview',
+      'wss://api.openai.com/v1/realtime?intent=transcription',
       { headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` } }
     );
     realtimeSessions.set(socket.id, ws);
 
     ws.on('open', () => {
+      // transcription_session.update: flat 구조, session.update와 다름
       ws.send(JSON.stringify({
-        type: 'session.update',
+        type: 'transcription_session.update',
         session: {
-          type: 'transcription',
-          audio: { input: { format: 'pcm16', transcription: { model: 'gpt-4o-transcribe' } } },
+          input_audio_format: 'pcm16',
+          input_audio_transcription: { model: 'gpt-4o-transcribe' },
           turn_detection: {
             type: 'server_vad',
             threshold: 0.3,
@@ -306,7 +308,7 @@ io.on('connection', (socket) => {
     ws.on('message', (data) => {
       try {
         const event = JSON.parse(data.toString());
-        console.log(`[Realtime] ${event.type}`);  // 모든 이벤트 로깅 (진단용)
+        console.log(`[Realtime] ${event.type}`);
         if (event.type === 'input_audio_buffer.speech_started') {
           socket.emit('realtime-transcript', { type: 'start', text: '' });
         } else if (event.type === 'conversation.item.input_audio_transcription.delta') {
