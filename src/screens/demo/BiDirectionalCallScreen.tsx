@@ -184,7 +184,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       // 자막: 항상 업데이트 (타이머 리셋)
       if (subClearTimerRef.current) clearTimeout(subClearTimerRef.current);
       setCurrentSub(text);
-      subClearTimerRef.current = setTimeout(() => setCurrentSub(''), 5000);
+      subClearTimerRef.current = setTimeout(() => setCurrentSub(''), 8000);
 
       // 수신 중복 방지: 동일 메시지를 2초 이내에 다시 받으면 로그/TTS 차단
       const isDuplicate =
@@ -1357,9 +1357,11 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   // 공통 자막 오버레이 (PC 우측 패널 / 모바일 메인 화면)
+  // zIndex: 20 — video 하드웨어 가속 레이어 위에 반드시 표시되도록 강제
   subOverlayTop: {
     position: 'absolute',
     top: 0, left: 0, right: 0,
+    zIndex: 20,
     backgroundColor: 'rgba(0,150,80,0.90)',
     paddingVertical: 14,
     paddingHorizontal: 16,
@@ -1376,6 +1378,7 @@ const styles = StyleSheet.create({
   subOverlayBottom: {
     position: 'absolute',
     bottom: 0, left: 0, right: 0,
+    zIndex: 20,
     backgroundColor: 'rgba(0,0,0,0.88)',
     paddingVertical: 14,
     paddingHorizontal: 16,
