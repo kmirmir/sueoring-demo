@@ -281,7 +281,7 @@ io.on('connection', (socket) => {
     if (existing) { try { existing.close(); } catch { /* 무시 */ } }
 
     const ws = new WebSocket(
-      'wss://api.openai.com/v1/realtime?model=gpt-4o-transcribe',
+      'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview',
       { headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` } }
     );
     realtimeSessions.set(socket.id, ws);
