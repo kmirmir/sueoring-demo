@@ -620,28 +620,6 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     const audioStream = new MediaStream(audioTracks);
     addLog(`🎙️ STT 시작 | mime:${mimeType.split(';')[0].split('/')[1]}`);
 
-    // VAD: 침묵 구간 청크를 Whisper에 보내지 않아 환각 원천 차단
-    let hasSpeech = false;
-    let vadCleanup: (() => void) | null = null;
-    try {
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const source   = audioCtx.createMediaStreamSource(audioStream);
-      const analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 512;
-      source.connect(analyser);
-      const buf = new Uint8Array(analyser.frequencyBinCount);
-      let rafId = 0;
-      const checkLevel = () => {
-        analyser.getByteFrequencyData(buf);
-        if (buf.reduce((a, b) => a + b, 0) / buf.length > 8) hasSpeech = true;
-        if (sttActiveRef.current) rafId = requestAnimationFrame(checkLevel);
-      };
-      checkLevel();
-      vadCleanup = () => { cancelAnimationFrame(rafId); audioCtx.close(); };
-      addLog('✅ VAD 활성');
-    } catch { hasSpeech = true; addLog('⚠️ VAD 미지원 — 항상 전송'); }
-
-    const vadAvailable = vadCleanup !== null;
     const recorder = new MediaRecorder(audioStream, { mimeType });
     mediaRecorderRef.current = recorder;
     sttActiveRef.current = true;
@@ -650,17 +628,14 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     let chunkCount = 0;
     recorder.ondataavailable = async (e) => {
       chunkCount++;
-      const speechDetected = vadAvailable ? hasSpeech : true;
-      if (vadAvailable) hasSpeech = false;
 
       // 청크마다 상태 로그 (처음 3개 + 이후 10개마다)
       if (chunkCount <= 3 || chunkCount % 10 === 0) {
-        addLog(`📦 청크#${chunkCount} size:${e.data.size}B vad:${speechDetected} stt:${sttActiveRef.current} tts:${ttsPlayingRef.current}`);
+        addLog(`📦 청크#${chunkCount} size:${e.data.size}B stt:${sttActiveRef.current} tts:${ttsPlayingRef.current}`);
       }
 
       if (!sttActiveRef.current || ttsPlayingRef.current) return;
-      if (e.data.size < 500) { addLog(`⏭ 청크 스킵 (size<500: ${e.data.size}B)`); return; }
-      if (!speechDetected) { return; }
+      if (e.data.size < 500) { addLog(`⏭ 스킵(size<500: ${e.data.size}B)`); return; }
 
       try {
         setSttLive('인식 중...');
@@ -707,7 +682,6 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     };
 
     recorder.addEventListener('stop', () => {
-      vadCleanup?.();
       setSttReady(false);
       addLog('⏹ recorder 중단');
     });
