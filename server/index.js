@@ -47,6 +47,27 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Realtime API 연결 테스트 엔드포인트
+app.get('/api/realtime-test', async (req, res) => {
+  if (!process.env.OPENAI_API_KEY) return res.json({ ok: false, error: 'API key missing' });
+  const ws = new WebSocket(
+    'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview',
+    { headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'OpenAI-Beta': 'realtime=v1' } }
+  );
+  const result = await new Promise((resolve) => {
+    const timer = setTimeout(() => { ws.terminate(); resolve({ ok: false, error: 'timeout (5s)' }); }, 5000);
+    ws.on('open', () => { clearTimeout(timer); ws.close(); resolve({ ok: true }); });
+    ws.on('message', (data) => {
+      try {
+        const e = JSON.parse(data.toString());
+        if (e.type === 'session.created') { clearTimeout(timer); ws.close(); resolve({ ok: true, model: e.session?.model }); }
+      } catch { /* 무시 */ }
+    });
+    ws.on('error', (err) => { clearTimeout(timer); resolve({ ok: false, error: err.message }); });
+  });
+  res.json(result);
+});
+
 // ── OpenAI TTS 프록시 ──────────────────────────────────────
 // POST /api/tts  { text: "안녕하세요" }  →  mp3 오디오 반환
 app.post('/api/tts', express.json(), async (req, res) => {
@@ -260,7 +281,7 @@ io.on('connection', (socket) => {
     if (existing) { try { existing.close(); } catch { /* 무시 */ } }
 
     const ws = new WebSocket(
-      'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17',
+      'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview',
       { headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'OpenAI-Beta': 'realtime=v1' } }
     );
     realtimeSessions.set(socket.id, ws);
@@ -277,7 +298,6 @@ io.on('connection', (socket) => {
             threshold: 0.5,
             prefix_padding_ms: 300,
             silence_duration_ms: 600,
-            create_response: false,
           },
         },
       }));
@@ -287,6 +307,7 @@ io.on('connection', (socket) => {
     ws.on('message', (data) => {
       try {
         const event = JSON.parse(data.toString());
+        console.log(`[Realtime] ${event.type}`);  // 모든 이벤트 로깅 (진단용)
         if (event.type === 'input_audio_buffer.speech_started') {
           socket.emit('realtime-transcript', { type: 'start', text: '' });
         } else if (event.type === 'conversation.item.input_audio_transcription.delta') {
@@ -295,14 +316,18 @@ io.on('connection', (socket) => {
           socket.emit('realtime-transcript', { type: 'final', text: event.transcript || '' });
         } else if (event.type === 'error') {
           console.error('Realtime API error:', JSON.stringify(event.error));
+          socket.emit('realtime-error', { message: event.error?.message || 'Realtime API error' });
         }
       } catch { /* 무시 */ }
     });
 
-    ws.on('error', (err) => console.error('Realtime WS error:', err.message));
-    ws.on('close', () => {
+    ws.on('error', (err) => {
+      console.error('Realtime WS error:', err.message);
+      socket.emit('realtime-error', { message: err.message });
+    });
+    ws.on('close', (code) => {
       realtimeSessions.delete(socket.id);
-      console.log(`🔌 Realtime STT 종료: ${socket.id}`);
+      console.log(`🔌 Realtime STT 종료: ${socket.id} (code: ${code})`);
     });
   });
 

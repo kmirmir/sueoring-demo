@@ -413,6 +413,11 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       onDataMessage(JSON.stringify({ type, text }));
     });
 
+    // Realtime STT 에러 수신 (진단용)
+    socket.on('realtime-error', ({ message }: { message: string }) => {
+      console.error('🔴 Realtime STT error:', message);
+    });
+
     // ── Realtime STT 트랜스크립트 수신 (청인 전용) ──────────────
     socket.on('realtime-transcript', ({ type, text }: { type: 'start' | 'delta' | 'final'; text: string }) => {
       if (type === 'start') {
