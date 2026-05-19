@@ -469,14 +469,17 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     hands.setOptions({ maxNumHands: 2, modelComplexity: 0, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
 
     // 클로저 지역 변수
-    let lastSentTime = 0;                     // 마지막 전송 시각
-    let lastSentGesture: string | null = null; // 마지막 실제 전송된 제스처
-    let pendingGesture: string | null = null;  // 안정화 대기 중인 제스처
-    let pendingStartTime = 0;                  // 대기 시작 시각
-    let gestureGoneSince = 0;                  // 손 감지 소실 시작 시각
-    const GESTURE_STABLE_MS = 700;  // 같은 제스처 유지 시간
-    const SEND_COOLDOWN_MS  = 2000; // 연속 전송 방지 최소 간격
-    const GESTURE_RESET_MS  = 1000; // 손 소실 후 lastSentGesture 리셋 시간
+    let lastSentTime = 0;
+    let lastSentGesture: string | null = null;
+    let pendingGesture: string | null = null;
+    let pendingStartTime = 0;
+    let gestureGoneSince = 0;
+    const GESTURE_STABLE_MS = 700;
+    const SEND_COOLDOWN_MS  = 2000;
+    const GESTURE_RESET_MS  = 1000;
+    // 바운딩 박스 스무딩 (EMA) — 떨림 방지
+    const BB_ALPHA = 0.25; // 낮을수록 더 부드러움 (0.1~0.4 권장)
+    let bbX = -1, bbY = 0, bbW = 0, bbH = 0; // -1 = 미초기화
 
     hands.onResults((results: any) => {
       if (!canvasRef.current || !localVideoRef.current) return;
@@ -493,27 +496,38 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       if (!results.multiHandLandmarks?.length) {
         pendingGesture = null;
         pendingStartTime = 0;
-        // 손 소실 1초 후 lastSentGesture 리셋 → 같은 수어 재사용 가능
+        bbX = -1; // 손 소실 시 스무딩 초기화
         if (!gestureGoneSince) gestureGoneSince = now;
         if (now - gestureGoneSince >= GESTURE_RESET_MS) lastSentGesture = null;
         setGestureLabel('');
         return;
       }
-      gestureGoneSince = 0; // 손 감지됨 → 소실 타이머 리셋
+      gestureGoneSince = 0;
 
       const landmarks = results.multiHandLandmarks[0];
 
-      // 바운딩 박스 (항상 표시)
+      // 바운딩 박스 원시 좌표 계산
       let minX = 1, minY = 1, maxX = 0, maxY = 0;
       landmarks.forEach((lm: any) => {
         minX = Math.min(minX, lm.x); minY = Math.min(minY, lm.y);
         maxX = Math.max(maxX, lm.x); maxY = Math.max(maxY, lm.y);
       });
-      const bx = (1 - maxX) * canvas.width,  by = minY * canvas.height;
-      const bw = (maxX - minX) * canvas.width, bh = (maxY - minY) * canvas.height;
+      const rawBx = (1 - maxX) * canvas.width;
+      const rawBy = minY * canvas.height;
+      const rawBw = (maxX - minX) * canvas.width;
+      const rawBh = (maxY - minY) * canvas.height;
+
+      // EMA 스무딩 적용 (첫 프레임은 원시값으로 초기화)
+      if (bbX < 0) { bbX = rawBx; bbY = rawBy; bbW = rawBw; bbH = rawBh; }
+      else {
+        bbX = BB_ALPHA * rawBx + (1 - BB_ALPHA) * bbX;
+        bbY = BB_ALPHA * rawBy + (1 - BB_ALPHA) * bbY;
+        bbW = BB_ALPHA * rawBw + (1 - BB_ALPHA) * bbW;
+        bbH = BB_ALPHA * rawBh + (1 - BB_ALPHA) * bbH;
+      }
 
       ctx.strokeStyle = '#00FF88'; ctx.lineWidth = 3;
-      ctx.strokeRect(bx, by, bw, bh);
+      ctx.strokeRect(bbX, bbY, bbW, bbH);
 
       // 제스처 인식 + 시간 기반 안정화
       const gesture = recognizeGesture(landmarks);
@@ -533,10 +547,10 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
           // 안정화 완료 → 바운딩 박스 라벨 표시
           setGestureLabel(gesture);
           ctx.fillStyle = 'rgba(0,255,136,0.85)';
-          ctx.fillRect(bx, by - 36, Math.max(bw, 120), 32);
+          ctx.fillRect(bbX, bbY - 36, Math.max(bbW, 120), 32);
           ctx.fillStyle = '#000';
           ctx.font = 'bold 18px Arial';
-          ctx.fillText(gesture, bx + 8, by - 12);
+          ctx.fillText(gesture, bbX + 8, bbY - 12);
 
           // 전송 조건: ① 이전에 전송한 수어와 다른 경우 ② 최소 쿨다운 경과
           const isNewGesture    = gesture !== lastSentGesture;
