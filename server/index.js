@@ -80,7 +80,7 @@ app.post('/api/stt', upload.single('audio'), async (req, res) => {
     res.json({ text: transcription.text || '' });
   } catch (err) {
     console.error('STT error:', err.message);
-    res.status(500).json({ error: 'STT failed' });
+    res.status(500).json({ error: err.message || 'STT failed' });
   }
 });
 

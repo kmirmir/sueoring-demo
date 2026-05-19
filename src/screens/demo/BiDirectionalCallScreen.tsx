@@ -646,7 +646,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       }
 
       if (!sttActiveRef.current || ttsPlayingRef.current) return;
-      if (e.data.size < 2000) { addLog(`⏭ 스킵(size<2000: ${e.data.size}B)`); return; }
+      if (e.data.size < 1000) { addLog(`⏭ 스킵(size<1000: ${e.data.size}B)`); return; }
 
       try {
         setSttLive('인식 중...');
@@ -658,7 +658,12 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
         const text = data.text?.trim();
         setSttLive('');
 
-        if (!text) { addLog('⚪ 빈 결과'); return; }
+        // HTTP 에러와 빈 결과 구분
+        if (!response.ok) {
+          addLog(`❌ STT HTTP${response.status}: ${data.error ?? 'error'}`);
+          return;
+        }
+        if (!text) { addLog('⚪ 빈 결과 (무음)'); return; }
 
         if (STT_HALLUCINATIONS.some(h => text.includes(h))) {
           addLog(`🚫 환각차단: "${text.substring(0, 15)}"`);
@@ -697,18 +702,12 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       addLog('⏹ recorder 중단');
     });
 
-    // timeslice 없이 start() → requestData()로 주기적 수동 요청
-    // (iOS Safari 등 timeslice 미지원 브라우저 대응)
-    recorder.start();
-    addLog('▶ recorder.start()');
-    const dataTimer = setInterval(() => {
-      if (mediaRecorderRef.current?.state === 'recording') {
-        mediaRecorderRef.current.requestData();
-      }
-    }, 1500);
-    recorder.addEventListener('stop', () => clearInterval(dataTimer), { once: true });
+    // timeslice 3초: 각 청크가 독립된 완전한 오디오 파일 → Whisper 파싱 신뢰도 향상
+    // (requestData() 방식은 WEBM 헤더 없는 불완전 청크 발생 → 빈 결과 원인)
+    recorder.start(3000);
+    addLog('▶ recorder.start(3000)');
 
-    // 자가 복구 헬스체크: 6초마다 확인, 비활성 시 자동 재시작
+    // 자가 복구 헬스체크: 8초마다 확인, 비활성 시 자동 재시작
     const healthCheckId = setInterval(() => {
       if (!sttActiveRef.current || ttsPlayingRef.current) return;
       const rec = mediaRecorderRef.current;
@@ -717,7 +716,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
         addLog('🔄 STT 자가복구 재시작');
         initSTT();
       }
-    }, 6000);
+    }, 8000);
     recorder.addEventListener('stop', () => clearInterval(healthCheckId), { once: true });
   };
 
