@@ -17,7 +17,7 @@ const SIGNAL_SERVER =
     ? 'https://sueoring-server.onrender.com'
     : 'http://localhost:3001';
 
-const SEGMENT_MS = 200;
+const SEGMENT_MS = 2000;
 
 interface STTResult {
   id: number;
