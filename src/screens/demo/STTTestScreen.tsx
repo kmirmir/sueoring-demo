@@ -20,6 +20,7 @@ const SIGNAL_SERVER =
 const DEFAULT_RMS_THRESHOLD    = 0.015;
 const DEFAULT_SILENCE_DURATION = 600;
 const DEFAULT_MIN_SEGMENT      = 300;
+const DEFAULT_MIN_VOICE        = 200;  // RMS가 이 시간 이상 연속으로 threshold 초과해야 발화로 인정
 
 interface STTResult {
   id: number;
@@ -105,13 +106,16 @@ export default function STTTestScreen({ onBack }: Props) {
   const [rmsThreshold,    setRmsThreshold]    = useState(DEFAULT_RMS_THRESHOLD);
   const [silenceDuration, setSilenceDuration] = useState(DEFAULT_SILENCE_DURATION);
   const [minSegment,      setMinSegment]      = useState(DEFAULT_MIN_SEGMENT);
+  const [minVoice,        setMinVoice]        = useState(DEFAULT_MIN_VOICE);
   const rmsThresholdRef    = useRef(DEFAULT_RMS_THRESHOLD);
   const silenceDurationRef = useRef(DEFAULT_SILENCE_DURATION);
   const minSegmentRef      = useRef(DEFAULT_MIN_SEGMENT);
+  const minVoiceRef        = useRef(DEFAULT_MIN_VOICE);
 
   const updateRms     = (v: number) => { setRmsThreshold(v);    rmsThresholdRef.current    = v; };
   const updateSilence = (v: number) => { setSilenceDuration(v); silenceDurationRef.current = v; };
   const updateMin     = (v: number) => { setMinSegment(v);      minSegmentRef.current      = v; };
+  const updateMinVoice= (v: number) => { setMinVoice(v);        minVoiceRef.current        = v; };
 
   const [isStreaming,    setIsStreaming]    = useState(false);
   const [isVoiceActive,  setIsVoiceActive]  = useState(false);
@@ -132,6 +136,7 @@ export default function STTTestScreen({ onBack }: Props) {
   const rmsIntervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
   const segmentStartRef = useRef(0);
   const hasSoundRef     = useRef(false);
+  const voiceStartRef   = useRef<number | null>(null); // 연속 발화 시작 시점
   const resultIdRef     = useRef(0);
 
   // ── Whisper 전송 ───────────────────────────────────────────
@@ -158,7 +163,8 @@ export default function STTTestScreen({ onBack }: Props) {
   // ── 세그먼트 시작 ─────────────────────────────────────────
   const startSegment = useCallback(() => {
     if (!activeRef.current || !streamRef.current) return;
-    hasSoundRef.current   = false;
+    hasSoundRef.current     = false;
+    voiceStartRef.current   = null;
     segmentStartRef.current = Date.now();
 
     const recorder = new MediaRecorder(streamRef.current, { mimeType: mimeTypeRef.current });
@@ -194,10 +200,16 @@ export default function STTTestScreen({ onBack }: Props) {
       setRmsLevel(rms);
 
       if (rms > rmsThresholdRef.current) {
-        setIsVoiceActive(true);
-        hasSoundRef.current = true;
+        // 연속 발화 시작 시점 기록
+        if (voiceStartRef.current === null) voiceStartRef.current = Date.now();
+        const voiceDuration = Date.now() - voiceStartRef.current;
+        const confirmed = voiceDuration >= minVoiceRef.current;
+        setIsVoiceActive(confirmed);
+        if (confirmed) hasSoundRef.current = true;
         if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
       } else {
+        // 침묵 → 연속 발화 카운터 리셋
+        voiceStartRef.current = null;
         setIsVoiceActive(false);
         if (!silenceTimerRef.current) {
           silenceTimerRef.current = setTimeout(() => {
@@ -310,6 +322,13 @@ export default function STTTestScreen({ onBack }: Props) {
             display={`${minSegment}ms`}
             min={100} max={1000} step={100}
             onChange={updateMin}
+          />
+          <SettingRow
+            label="연속 발화"
+            value={minVoice}
+            display={`${minVoice}ms`}
+            min={50} max={1000} step={50}
+            onChange={updateMinVoice}
           />
         </View>
 
