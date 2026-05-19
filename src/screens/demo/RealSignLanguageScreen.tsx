@@ -1523,10 +1523,10 @@ export default function RealSignLanguageScreen({ onBack }: RealSignLanguageScree
                 {subtitleHistory.length === 0 ? (
                   <Text style={styles.emptyText}>아직 수신된 자막이 없습니다</Text>
                 ) : (
-                  subtitleHistory.map((item, index) => (
+                  [...subtitleHistory].reverse().map((item, index) => (
                     <View key={index} style={styles.historyItem}>
                       <Text style={styles.historyItemText}>
-                        {index + 1}. {item.text}
+                        {subtitleHistory.length - index}. {item.text}
                       </Text>
                       <Text style={styles.historyItemTime}>
                         {new Date(item.timestamp).toLocaleTimeString('ko-KR')}
