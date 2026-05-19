@@ -439,9 +439,13 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   // ── 카메라 시작 ──────────────────────────────────────────
   const startCamera = async () => {
     try {
+      // 모바일: 해상도 제약 없이 facingMode만 지정 (portrait/landscape 자동 처리)
+      // PC: 640×480 ideal로 안정적인 해상도 요청
+      const videoConstraints: MediaTrackConstraints = isMobileWeb
+        ? { facingMode: 'user' }
+        : { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' };
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
-        // 에코캔슬레이션·노이즈억제 명시적 활성화 → TTS 하울링 하드웨어 수준 차단
+        video: videoConstraints,
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       localStreamRef.current = stream;   // 별도 ref에 보존
@@ -467,12 +471,30 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       locateFile: (f: string) =>
         `${workingCdnRef.current}/@mediapipe/hands@${MEDIAPIPE_HANDS_VERSION}/${f}`,
     });
-    hands.setOptions({ maxNumHands: 2, modelComplexity: 0, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+    // 모바일은 카메라 품질이 낮아 임계값 완화
+    hands.setOptions({
+      maxNumHands: 2,
+      modelComplexity: 0,
+      minDetectionConfidence: isMobileWeb ? 0.4 : 0.5,
+      minTrackingConfidence: isMobileWeb ? 0.35 : 0.5,
+    });
 
-    // 클로저 지역 변수: React ref 대신 사용 → onResults 콜백 내에서 완전히 독립적으로 동작
-    let holdTimer: ReturnType<typeof setTimeout> | null = null;
+    // 클로저 지역 변수
+    let lastSentTime = 0;
+    let lastSentGesture: string | null = null;
     let pendingGesture: string | null = null;
-    const GESTURE_HOLD_MS = 2000;  // 같은 제스처 유지 시간 → 전송
+    let pendingStartTime = 0;
+    let gestureGoneSince = 0;
+    const GESTURE_STABLE_MS = 700;
+    const SEND_COOLDOWN_MS  = 2000;
+    const GESTURE_RESET_MS  = 1000;
+    // 모바일은 트래킹 품질이 낮아 스무딩을 더 강하게 적용
+    const BB_ALPHA = isMobileWeb ? 0.15 : 0.25;
+    let bbX = -1, bbY = 0, bbW = 0, bbH = 0;
+    // 전송 홀드 타이머: 인식 확정 후 2초 대기, 다른 제스처 확정 시 리셋
+    let holdTimer: ReturnType<typeof setTimeout> | null = null;
+    let transmitGesture: string | null = null;
+    const GESTURE_HOLD_MS = 2000;
 
     hands.onResults((results: any) => {
       if (!canvasRef.current || !localVideoRef.current) return;
@@ -480,63 +502,125 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      canvas.width  = localVideoRef.current.videoWidth  || canvas.clientWidth;
-      canvas.height = localVideoRef.current.videoHeight || canvas.clientHeight;
+      // 캔버스를 컨테이너 크기로 설정 (video objectFit:cover와 좌표계 일치)
+      const canvasW = canvas.clientWidth  || 640;
+      const canvasH = canvas.clientHeight || 480;
+      if (canvas.width !== canvasW)  canvas.width  = canvasW;
+      if (canvas.height !== canvasH) canvas.height = canvasH;
+      ctx.clearRect(0, 0, canvasW, canvasH);
 
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const now = Date.now();
 
-      if (!results.multiHandLandmarks?.length) { setGestureLabel(''); return; }
+      if (!results.multiHandLandmarks?.length) {
+        pendingGesture = null;
+        pendingStartTime = 0;
+        bbX = -1;
+        if (!gestureGoneSince) gestureGoneSince = now;
+        if (now - gestureGoneSince >= GESTURE_RESET_MS) lastSentGesture = null;
+        setGestureLabel('');
+        return;
+      }
+      gestureGoneSince = 0;
 
       const landmarks = results.multiHandLandmarks[0];
 
-      // 바운딩 박스
+      // objectFit:cover 좌표 보정 — 비디오와 캔버스 좌표계 일치
+      const vw = localVideoRef.current.videoWidth  || canvasW;
+      const vh = localVideoRef.current.videoHeight || canvasH;
+      const coverScale = Math.max(canvasW / vw, canvasH / vh);
+      const ox = (canvasW - vw * coverScale) / 2;
+      const oy = (canvasH - vh * coverScale) / 2;
+      // 정규화 좌표 → 캔버스 픽셀 (x는 미러 반전)
+      const toPx = (nx: number, ny: number) => ({
+        x: (1 - nx) * vw * coverScale + ox,
+        y: ny * vh * coverScale + oy,
+      });
+
+      // 바운딩 박스 원시 좌표 계산
       let minX = 1, minY = 1, maxX = 0, maxY = 0;
       landmarks.forEach((lm: any) => {
         minX = Math.min(minX, lm.x); minY = Math.min(minY, lm.y);
         maxX = Math.max(maxX, lm.x); maxY = Math.max(maxY, lm.y);
       });
-      // scaleX(-1)은 video에만 적용 → canvas는 x 좌표를 직접 반전
-      const bx = (1 - maxX) * canvas.width,  by = minY * canvas.height;
-      const bw = (maxX - minX) * canvas.width, bh = (maxY - minY) * canvas.height;
+      const { x: rawBx, y: rawBy } = toPx(maxX, minY); // maxX → 미러 시 시각적 좌측
+      const rawBw = (maxX - minX) * vw * coverScale;
+      const rawBh = (maxY - minY) * vh * coverScale;
+
+      // EMA 스무딩
+      if (bbX < 0) { bbX = rawBx; bbY = rawBy; bbW = rawBw; bbH = rawBh; }
+      else {
+        bbX = BB_ALPHA * rawBx + (1 - BB_ALPHA) * bbX;
+        bbY = BB_ALPHA * rawBy + (1 - BB_ALPHA) * bbY;
+        bbW = BB_ALPHA * rawBw + (1 - BB_ALPHA) * bbW;
+        bbH = BB_ALPHA * rawBh + (1 - BB_ALPHA) * bbH;
+      }
 
       ctx.strokeStyle = '#00FF88'; ctx.lineWidth = 3;
-      ctx.strokeRect(bx, by, bw, bh);
+      ctx.strokeRect(bbX, bbY, bbW, bbH);
 
-      // 제스처 인식
+      // 제스처 인식 + 시간 기반 안정화
       const gesture = recognizeGesture(landmarks);
+
       if (gesture) {
-        setGestureLabel(gesture);
-        ctx.fillStyle = 'rgba(0,255,136,0.85)';
-        ctx.fillRect(bx, by - 36, Math.max(bw, 120), 32);
-        ctx.fillStyle = '#000';
-        ctx.font = 'bold 18px Arial';
-        ctx.fillText(gesture, bx + 8, by - 12);
-        // 제스처가 바뀌면 홀드 타이머 리셋, 같으면 유지
+        // 다른 제스처로 전환 시 대기 타이머 리셋
         if (gesture !== pendingGesture) {
-          if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
           pendingGesture = gesture;
-          setSentGestureLabel(gesture);
-          setCooldownActive(true);  // 대기 중 표시
-          const capturedGesture = gesture;
-          holdTimer = setTimeout(() => {
-            holdTimer = null;
-            pendingGesture = null;
-            const now = Date.now();
-            if (dcRef.current?.readyState === 'open') {
-              dcRef.current.send(JSON.stringify({ type: 'gesture', text: capturedGesture }));
-            } else if (socketRef.current?.connected) {
-              socketRef.current.emit('room-text', { roomCode: currentRoomRef.current, type: 'gesture', text: capturedGesture });
-            }
-            setCooldownActive(false);
-            setTimeout(() => setSentGestureLabel(prev => prev === capturedGesture ? '' : prev), 5000);
-            setMessages(prev => {
-              const last = prev[prev.length - 1];
-              if (last && last.from === 'me' && last.text === capturedGesture && now - last.ts < 2000) return prev;
-              return [...prev, { text: capturedGesture, from: 'me', ts: now }];
-            });
-          }, GESTURE_HOLD_MS);
+          pendingStartTime = now;
+          setGestureLabel('');
         }
+
+        const elapsed = now - pendingStartTime;
+        const confirmed = elapsed >= GESTURE_STABLE_MS;
+
+        if (confirmed) {
+          // 안정화 완료 → 바운딩 박스 라벨 표시
+          setGestureLabel(gesture);
+          ctx.fillStyle = 'rgba(0,255,136,0.85)';
+          ctx.fillRect(bbX, bbY - 36, Math.max(bbW, 120), 32);
+          ctx.fillStyle = '#000';
+          ctx.font = 'bold 18px Arial';
+          ctx.fillText(gesture, bbX + 8, bbY - 12);
+
+          // 전송 조건: ① 이전에 전송한 수어와 다른 경우 ② 최소 쿨다운 경과
+          const isNewGesture    = gesture !== lastSentGesture;
+          const cooldownPassed  = now - lastSentTime >= SEND_COOLDOWN_MS;
+
+          if (isNewGesture && cooldownPassed) {
+            // 다른 제스처가 확정되면 홀드 타이머 리셋 후 새로 시작
+            if (gesture !== transmitGesture) {
+              if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+              transmitGesture = gesture;
+              setCooldownActive(true);
+              holdTimer = setTimeout(() => {
+                holdTimer = null;
+                const sentGesture = transmitGesture;
+                transmitGesture = null;
+                if (!sentGesture) return;
+                const sentTime = Date.now();
+                lastSentTime    = sentTime;
+                lastSentGesture = sentGesture;
+                if (dcRef.current?.readyState === 'open') {
+                  dcRef.current.send(JSON.stringify({ type: 'gesture', text: sentGesture }));
+                } else if (socketRef.current?.connected) {
+                  socketRef.current.emit('room-text', { roomCode: currentRoomRef.current, type: 'gesture', text: sentGesture });
+                }
+                setCooldownActive(false);
+                setSentGestureLabel(sentGesture);
+                setTimeout(() => setSentGestureLabel(prev => prev === sentGesture ? '' : prev), 5000);
+                setMessages(prev => {
+                  const last = prev[prev.length - 1];
+                  if (last && last.from === 'me' && last.text === sentGesture && sentTime - last.ts < 2000) return prev;
+                  return [...prev, { text: sentGesture, from: 'me', ts: sentTime }];
+                });
+              }, GESTURE_HOLD_MS);
+            }
+            // transmitGesture === gesture → 기존 홀드 타이머 유지 (2초 대기 중)
+          }
+        }
+        // 안정화 대기 중: 바운딩 박스만 표시, 라벨 없음
       } else {
+        pendingGesture = null;
+        pendingStartTime = 0;
         setGestureLabel('');
         // 손이 사라져도 타이머 유지 — 2초 내 다른 제스처 인식 시에만 리셋
       }

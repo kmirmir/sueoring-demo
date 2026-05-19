@@ -124,8 +124,15 @@ export default function RealSignLanguageScreen({ onBack }: RealSignLanguageScree
 
   // 제스처 안정화 필터 (연속 감지 확인)
   const gestureStabilityBufferRef = useRef<string[]>([]);
-  const STABILITY_THRESHOLD = 5; // 정적 수어 — 5프레임 연속 감지 필요
-  const MOTION_STABILITY_THRESHOLD = 3; // 모션 수어(흔들기) — 3프레임으로 완화 (pose 흔들림 보정)
+  const STABILITY_THRESHOLD = 10; // 정적 수어 — 10프레임 연속 감지 필요 (약 0.7초)
+  const MOTION_STABILITY_THRESHOLD = 5; // 모션 수어 — 5프레임으로 완화
+  // 바운딩 박스 EMA 스무딩 (떨림 방지) — 손 슬롯 0,1 + 포즈용
+  const BB_ALPHA = 0.25;
+  const bbHandRef  = useRef<Array<{x:number,y:number,w:number,h:number}>>([
+    { x: -1, y: 0, w: 0, h: 0 },
+    { x: -1, y: 0, w: 0, h: 0 },
+  ]);
+  const bbPoseRef  = useRef({ x: -1, y: 0, w: 0, h: 0 });
   const MOTION_GESTURES = ['구급차', '급해요'];
   const [detectionQuality, setDetectionQuality] = useState<'excellent' | 'good' | 'poor' | 'none'>('none');
 
@@ -679,23 +686,33 @@ export default function RealSignLanguageScreen({ onBack }: RealSignLanguageScree
         });
 
         const pad = 0.04;
-        const { x: bx, y: by } = toCanvasPx(Math.min(1, bMaxX + pad), Math.max(0, bMinY - pad)); // x 반전 후 bMaxX가 시각적 좌측
-        const bw = (Math.min(1, bMaxX + pad) - Math.max(0, bMinX - pad)) * videoW * coverScale;
-        const bh = (Math.min(1, bMaxY + pad) - Math.max(0, bMinY - pad)) * videoH * coverScale;
+        const { x: rawPBx, y: rawPBy } = toCanvasPx(Math.min(1, bMaxX + pad), Math.max(0, bMinY - pad));
+        const rawPBw = (Math.min(1, bMaxX + pad) - Math.max(0, bMinX - pad)) * videoW * coverScale;
+        const rawPBh = (Math.min(1, bMaxY + pad) - Math.max(0, bMinY - pad)) * videoH * coverScale;
+
+        // EMA 스무딩
+        const pb = bbPoseRef.current;
+        if (pb.x < 0) { pb.x = rawPBx; pb.y = rawPBy; pb.w = rawPBw; pb.h = rawPBh; }
+        else {
+          pb.x = BB_ALPHA * rawPBx + (1 - BB_ALPHA) * pb.x;
+          pb.y = BB_ALPHA * rawPBy + (1 - BB_ALPHA) * pb.y;
+          pb.w = BB_ALPHA * rawPBw + (1 - BB_ALPHA) * pb.w;
+          pb.h = BB_ALPHA * rawPBh + (1 - BB_ALPHA) * pb.h;
+        }
 
         ctx.strokeStyle = poseColor;
         ctx.lineWidth = 4;
-        ctx.strokeRect(bx, by, bw, bh);
+        ctx.strokeRect(pb.x, pb.y, pb.w, pb.h);
 
         const labelText = `${poseEmoji} ${poseGesture}`;
         ctx.font = 'bold 26px Arial';
         const labelW = Math.max(ctx.measureText(labelText).width + 24, 140);
         ctx.fillStyle = poseColor;
         ctx.globalAlpha = 0.88;
-        ctx.fillRect(bx, by - 46, labelW, 40);
+        ctx.fillRect(pb.x, pb.y - 46, labelW, 40);
         ctx.globalAlpha = 1.0;
         ctx.fillStyle = '#FFFFFF';
-        ctx.fillText(labelText, bx + 10, by - 16);
+        ctx.fillText(labelText, pb.x + 10, pb.y - 16);
       }
     }
 
@@ -774,7 +791,7 @@ export default function RealSignLanguageScreen({ onBack }: RealSignLanguageScree
           });
         }
 
-        // 바운딩 박스 계산 및 그리기
+        // 바운딩 박스 계산 + EMA 스무딩
         let minX = 1, minY = 1, maxX = 0, maxY = 0;
         landmarks.forEach((landmark: any) => {
           minX = Math.min(minX, landmark.x);
@@ -782,33 +799,45 @@ export default function RealSignLanguageScreen({ onBack }: RealSignLanguageScree
           maxX = Math.max(maxX, landmark.x);
           maxY = Math.max(maxY, landmark.y);
         });
+        const { x: rawBx, y: rawBy } = toCanvasPx(maxX, minY);
+        const rawBw = (maxX - minX) * videoW * coverScale;
+        const rawBh = (maxY - minY) * videoH * coverScale;
 
-        const { x: boxX, y: boxY } = toCanvasPx(maxX, minY); // x 반전 후 maxX가 시각적 좌측
-        const boxWidth = (maxX - minX) * videoW * coverScale;
-        const boxHeight = (maxY - minY) * videoH * coverScale;
+        const slot = handSlotIdx < 2 ? handSlotIdx : 0;
+        const hb = bbHandRef.current[slot];
+        if (hb.x < 0) { hb.x = rawBx; hb.y = rawBy; hb.w = rawBw; hb.h = rawBh; }
+        else {
+          hb.x = BB_ALPHA * rawBx + (1 - BB_ALPHA) * hb.x;
+          hb.y = BB_ALPHA * rawBy + (1 - BB_ALPHA) * hb.y;
+          hb.w = BB_ALPHA * rawBw + (1 - BB_ALPHA) * hb.w;
+          hb.h = BB_ALPHA * rawBh + (1 - BB_ALPHA) * hb.h;
+        }
 
         ctx.strokeStyle = '#00FF00';
         ctx.lineWidth = 3;
-        ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
+        ctx.strokeRect(hb.x, hb.y, hb.w, hb.h);
 
         // 제스처 인식 (첫 번째 손만, 모션 정보 포함)
         if (!recognizedGesture) {
-          // handedness 슬롯 기준으로 이 손이 흔들리고 있는지 확인
           const handIsShaking = isSlotShaking(handSlotIdx);
           recognizedGesture = recognizeGesture(landmarks, handIsShaking);
         }
 
         // 제스처 텍스트 표시
         if (recognizedGesture) {
-          const labelW = Math.max(boxWidth, 120);
+          const labelW = Math.max(hb.w, 120);
           ctx.fillStyle = 'rgba(0, 255, 0, 0.8)';
-          ctx.fillRect(boxX, boxY - 36, labelW, 32);
+          ctx.fillRect(hb.x, hb.y - 36, labelW, 32);
           ctx.fillStyle = '#000000';
           ctx.font = 'bold 18px Arial';
-          ctx.fillText(recognizedGesture, boxX + 8, boxY - 12);
+          ctx.fillText(recognizedGesture, hb.x + 8, hb.y - 12);
         }
       }
     } else if (!recognizedGesture) {
+      // 손 소실 시 스무딩 초기화
+      bbHandRef.current[0].x = -1;
+      bbHandRef.current[1].x = -1;
+      bbPoseRef.current.x = -1;
       setHandDetected(false);
     }
 
@@ -832,7 +861,7 @@ export default function RealSignLanguageScreen({ onBack }: RealSignLanguageScree
       // 안정적인 제스처만 큐에 추가
       if (isStable &&
           recognizedGesture !== lastRecognizedGestureRef.current &&
-          (now - lastRecognizedTimeRef.current) > 1000) {
+          (now - lastRecognizedTimeRef.current) > 2000) {
 
         // 마지막 인식 정보 업데이트
         lastRecognizedGestureRef.current = recognizedGesture;
@@ -1494,10 +1523,10 @@ export default function RealSignLanguageScreen({ onBack }: RealSignLanguageScree
                 {subtitleHistory.length === 0 ? (
                   <Text style={styles.emptyText}>아직 수신된 자막이 없습니다</Text>
                 ) : (
-                  subtitleHistory.map((item, index) => (
+                  [...subtitleHistory].reverse().map((item, index) => (
                     <View key={index} style={styles.historyItem}>
                       <Text style={styles.historyItemText}>
-                        {index + 1}. {item.text}
+                        {subtitleHistory.length - index}. {item.text}
                       </Text>
                       <Text style={styles.historyItemTime}>
                         {new Date(item.timestamp).toLocaleTimeString('ko-KR')}

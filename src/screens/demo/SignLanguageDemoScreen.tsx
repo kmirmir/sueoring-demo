@@ -77,10 +77,13 @@ export default function SignLanguageDemoScreen({ onBack }: SignLanguageDemoScree
   const stabilityBufRef    = useRef<string[]>([]);
   const lastGestureRef     = useRef('');
   const lastGestureTimeRef = useRef(0);
+  // 바운딩 박스 EMA 스무딩 (떨림 방지)
+  const bbSmoothRef = useRef({ x: -1, y: 0, w: 0, h: 0 });
+  const BB_ALPHA    = 0.25;
   const fpsCountRef        = useRef(0);
   const fpsTimeRef         = useRef(Date.now());
-  const STABILITY_FRAMES   = 5;
-  const COOLDOWN_MS        = 1200;
+  const STABILITY_FRAMES   = 12;  // 5 → 12 (약 0.8초 유지 필요)
+  const COOLDOWN_MS        = 2500; // 1200 → 2500ms
 
   // ── 정리 ──────────────────────────────────────────────
   const stopCamera = useCallback(() => {
@@ -185,6 +188,7 @@ export default function SignLanguageDemoScreen({ onBack }: SignLanguageDemoScree
       setHandDetected(false);
       setCurrentGesture('');
       stabilityBufRef.current = [];
+      bbSmoothRef.current.x = -1; // 손 소실 시 스무딩 초기화
       ctx.restore();
       return;
     }
@@ -202,17 +206,27 @@ export default function SignLanguageDemoScreen({ onBack }: SignLanguageDemoScree
       window.drawLandmarks(ctx, scaled, { color: '#FF0000', lineWidth: 2, radius: 4 });
     }
 
-    // 바운딩 박스
+    // 바운딩 박스 원시 좌표 계산
     let minX = 1, minY = 1, maxX = 0, maxY = 0;
     landmarks.forEach((lm: any) => {
       minX = Math.min(minX, lm.x); minY = Math.min(minY, lm.y);
       maxX = Math.max(maxX, lm.x); maxY = Math.max(maxY, lm.y);
     });
-    const { x: bx, y: by } = toPx(maxX, minY); // x 반전 후 maxX가 시각적 좌측
-    const bw = (maxX - minX) * vw * scale;
-    const bh = (maxY - minY) * vh * scale;
+    const { x: rawBx, y: rawBy } = toPx(maxX, minY);
+    const rawBw = (maxX - minX) * vw * scale;
+    const rawBh = (maxY - minY) * vh * scale;
+
+    // EMA 스무딩 적용
+    const bb = bbSmoothRef.current;
+    if (bb.x < 0) { bb.x = rawBx; bb.y = rawBy; bb.w = rawBw; bb.h = rawBh; }
+    else {
+      bb.x = BB_ALPHA * rawBx + (1 - BB_ALPHA) * bb.x;
+      bb.y = BB_ALPHA * rawBy + (1 - BB_ALPHA) * bb.y;
+      bb.w = BB_ALPHA * rawBw + (1 - BB_ALPHA) * bb.w;
+      bb.h = BB_ALPHA * rawBh + (1 - BB_ALPHA) * bb.h;
+    }
     ctx.strokeStyle = '#00FF88'; ctx.lineWidth = 3;
-    ctx.strokeRect(bx, by, bw, bh);
+    ctx.strokeRect(bb.x, bb.y, bb.w, bb.h);
 
     // 제스처 인식
     const gesture = recognizeGesture(landmarks, isPortraitRef.current);
@@ -221,9 +235,9 @@ export default function SignLanguageDemoScreen({ onBack }: SignLanguageDemoScree
     if (gesture) {
       // 라벨
       ctx.fillStyle = 'rgba(0,255,136,0.88)';
-      ctx.fillRect(bx, by - 40, Math.max(bw, 130), 36);
+      ctx.fillRect(bb.x, bb.y - 40, Math.max(bb.w, 130), 36);
       ctx.fillStyle = '#000'; ctx.font = 'bold 20px Arial';
-      ctx.fillText(gesture, bx + 8, by - 12);
+      ctx.fillText(gesture, bb.x + 8, bb.y - 12);
 
       // 안정화 필터
       stabilityBufRef.current.push(gesture);
