@@ -631,93 +631,93 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     const audioStream = new MediaStream(audioTracks);
     addLog(`🎙️ STT 시작 | mime:${mimeType.split(';')[0].split('/')[1]}`);
 
-    const recorder = new MediaRecorder(audioStream, { mimeType });
-    mediaRecorderRef.current = recorder;
     sttActiveRef.current = true;
     setSttReady(true);
 
-    let chunkCount = 0;
-    recorder.ondataavailable = async (e) => {
-      chunkCount++;
+    let segCount = 0;
 
-      // 청크마다 상태 로그 (처음 3개 + 이후 10개마다)
-      if (chunkCount <= 3 || chunkCount % 10 === 0) {
-        addLog(`📦 청크#${chunkCount} size:${e.data.size}B stt:${sttActiveRef.current} tts:${ttsPlayingRef.current}`);
-      }
+    // stop() → ondataavailable → 완전한 WEBM 파일 → Whisper 전송 → start() 반복
+    const startSegment = () => {
+      if (!sttActiveRef.current) return;
 
-      if (!sttActiveRef.current || ttsPlayingRef.current) return;
-      if (e.data.size < 1000) { addLog(`⏭ 스킵(size<1000: ${e.data.size}B)`); return; }
+      const recorder = new MediaRecorder(audioStream, { mimeType });
+      mediaRecorderRef.current = recorder;
 
-      try {
-        setSttLive('인식 중...');
-        addLog('🌐 Whisper 요청 전송...');
-        const formData = new FormData();
-        formData.append('audio', e.data, `audio.${ext}`);
-        const response = await fetch(`${SIGNAL_SERVER}/api/stt`, { method: 'POST', body: formData });
-        const data = await response.json();
-        const text = data.text?.trim();
-        setSttLive('');
+      recorder.ondataavailable = async (e) => {
+        segCount++;
+        addLog(`📦 세그먼트#${segCount} size:${e.data.size}B`);
 
-        // HTTP 에러와 빈 결과 구분
-        if (!response.ok) {
-          addLog(`❌ STT HTTP${response.status}: ${data.error ?? 'error'}`);
-          return;
+        if (!sttActiveRef.current || ttsPlayingRef.current) return;
+        if (e.data.size < 1000) { addLog(`⏭ 스킵(size<1000: ${e.data.size}B)`); return; }
+
+        try {
+          setSttLive('인식 중...');
+          addLog('🌐 Whisper 요청 전송...');
+          const formData = new FormData();
+          formData.append('audio', e.data, `audio.${ext}`);
+          const response = await fetch(`${SIGNAL_SERVER}/api/stt`, { method: 'POST', body: formData });
+          const data = await response.json();
+          const text = data.text?.trim();
+          setSttLive('');
+
+          if (!response.ok) {
+            addLog(`❌ STT HTTP${response.status}: ${data.error ?? 'error'}`);
+            return;
+          }
+          if (!text) { addLog('⚪ 빈 결과 (무음)'); return; }
+
+          if (STT_HALLUCINATIONS.some(h => text.includes(h))) {
+            addLog(`🚫 환각차단: "${text.substring(0, 15)}"`);
+            return;
+          }
+
+          const normalize = (s: string) => s.replace(/\s+/g, '');
+          const normText = normalize(text);
+          const isEcho = recentTTSTextsRef.current.some(t => {
+            const normTts = normalize(t);
+            return normTts === normText || normTts.includes(normText);
+          });
+          if (isEcho) { addLog(`🔇 에코차단: "${text.substring(0, 15)}"`); return; }
+
+          addLog(`📝 인식성공: "${text.substring(0, 20)}"`);
+          setSttLive(text);
+          setTimeout(() => setSttLive(prev => prev === text ? '' : prev), 5000);
+          setMessages(prev => [...prev, { text, from: 'me', ts: Date.now() }]);
+          if (dcRef.current?.readyState === 'open') {
+            dcRef.current.send(JSON.stringify({ type: 'speech', text }));
+            addLog('📡 DataChannel 전송');
+          } else if (socketRef.current?.connected) {
+            socketRef.current.emit('room-text', { roomCode: currentRoomRef.current, type: 'speech', text });
+            addLog('📡 Socket 전송');
+          } else {
+            addLog('❌ 전송채널 없음');
+          }
+        } catch (err) {
+          addLog(`❌ STT오류: ${err}`);
+          setSttLive('');
         }
-        if (!text) { addLog('⚪ 빈 결과 (무음)'); return; }
+      };
 
-        if (STT_HALLUCINATIONS.some(h => text.includes(h))) {
-          addLog(`🚫 환각차단: "${text.substring(0, 15)}"`);
-          return;
-        }
-
-        const normalize = (s: string) => s.replace(/\s+/g, '');
-        const normText = normalize(text);
-        const isEcho = recentTTSTextsRef.current.some(t => {
-          const normTts = normalize(t);
-          return normTts === normText || normTts.includes(normText);
-        });
-        if (isEcho) { addLog(`🔇 에코차단: "${text.substring(0, 15)}"`); return; }
-
-        addLog(`📝 인식성공: "${text.substring(0, 20)}"`);
-        setSttLive(text);
-        setTimeout(() => setSttLive(prev => prev === text ? '' : prev), 5000);
-        setMessages(prev => [...prev, { text, from: 'me', ts: Date.now() }]);
-        if (dcRef.current?.readyState === 'open') {
-          dcRef.current.send(JSON.stringify({ type: 'speech', text }));
-          addLog('📡 DataChannel 전송');
-        } else if (socketRef.current?.connected) {
-          socketRef.current.emit('room-text', { roomCode: currentRoomRef.current, type: 'speech', text });
-          addLog('📡 Socket 전송');
+      // stop() 호출 시 ondataavailable이 헤더 포함 완전한 파일로 fire → 다음 세그먼트 시작
+      recorder.addEventListener('stop', () => {
+        if (sttActiveRef.current && !ttsPlayingRef.current) {
+          setTimeout(startSegment, 50);
         } else {
-          addLog('❌ 전송채널 없음');
+          setSttReady(false);
+          addLog('⏹ STT 중단');
         }
-      } catch (err) {
-        addLog(`❌ STT오류: ${err}`);
-        setSttLive('');
-      }
+      }, { once: true });
+
+      recorder.start();
+      addLog('▶ recorder.start()');
+
+      // 3초 후 stop → ondataavailable(완전한 파일) → 다음 세그먼트
+      setTimeout(() => {
+        if (recorder.state === 'recording') recorder.stop();
+      }, 3000);
     };
 
-    recorder.addEventListener('stop', () => {
-      setSttReady(false);
-      addLog('⏹ recorder 중단');
-    });
-
-    // timeslice 3초: 각 청크가 독립된 완전한 오디오 파일 → Whisper 파싱 신뢰도 향상
-    // (requestData() 방식은 WEBM 헤더 없는 불완전 청크 발생 → 빈 결과 원인)
-    recorder.start(3000);
-    addLog('▶ recorder.start(3000)');
-
-    // 자가 복구 헬스체크: 8초마다 확인, 비활성 시 자동 재시작
-    const healthCheckId = setInterval(() => {
-      if (!sttActiveRef.current || ttsPlayingRef.current) return;
-      const rec = mediaRecorderRef.current;
-      if (!rec || rec.state === 'inactive') {
-        clearInterval(healthCheckId);
-        addLog('🔄 STT 자가복구 재시작');
-        initSTT();
-      }
-    }, 8000);
-    recorder.addEventListener('stop', () => clearInterval(healthCheckId), { once: true });
+    startSegment();
   };
 
   // ── 서버 wake-up 핑 (Render 무료 슬립 대응) ─────────────
