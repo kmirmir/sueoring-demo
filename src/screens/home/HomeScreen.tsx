@@ -165,22 +165,22 @@ export default function HomeScreen({ onSignLanguageDemo, onRealSignLanguage, onB
 
             {onRealSignLanguage && (
               <TouchableOpacity style={[styles.demoButton, styles.demoButton_highlight]} onPress={onRealSignLanguage}>
-                <Text style={styles.demoButtonText}>🤟 실시간 수어 인식 (일방향 커뮤니케이션)</Text>
+                <Text style={styles.demoButtonText}>🤟 실시간 수어 인식 (성능 Test)</Text>
                 <Text style={styles.demoButtonSub}>수어 모션 및 성능 체크</Text>
-              </TouchableOpacity>
-            )}
-
-            {onBiDirectionalCall && (
-              <TouchableOpacity style={[styles.demoButton, styles.demoButton_webrtc]} onPress={onBiDirectionalCall}>
-                <Text style={styles.demoButtonText}>📹 실시간 수어 인식 (양방향 커뮤니케이션)</Text>
-                <Text style={styles.demoButtonSub}>수어 ↔ 음성 WebRTC 영상통화</Text>
               </TouchableOpacity>
             )}
 
             {onSignLanguageDemo && (
               <TouchableOpacity style={[styles.demoButton, styles.demoButton_primary]} onPress={onSignLanguageDemo}>
-                <Text style={styles.demoButtonText}>🖥️ 실시간 수어 인식 (가상 Demo 시연)</Text>
+                <Text style={styles.demoButtonText}>🖥️ 실시간 수어 (일방향 커뮤니케이션)</Text>
                 <Text style={styles.demoButtonSub}>실제 수어 인식 → 가상 청인 자막·음성 전달</Text>
+              </TouchableOpacity>
+            )}
+
+            {onBiDirectionalCall && (
+              <TouchableOpacity style={[styles.demoButton, styles.demoButton_webrtc]} onPress={onBiDirectionalCall}>
+                <Text style={styles.demoButtonText}>📹 실시간 수어 (양방향 커뮤니케이션)</Text>
+                <Text style={styles.demoButtonSub}>수어 ↔ 음성 WebRTC 영상통화</Text>
               </TouchableOpacity>
             )}
           </View>
