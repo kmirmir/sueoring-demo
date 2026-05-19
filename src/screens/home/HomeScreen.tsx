@@ -12,9 +12,11 @@ interface HomeScreenProps {
   onBiDirectionalCall?: () => void;
   onGestureLearning?: () => void;
   onSignDictionary?: () => void;
+  onCCTV?: () => void;
+  onSTTTest?: () => void;
 }
 
-export default function HomeScreen({ onSignLanguageDemo, onRealSignLanguage, onBiDirectionalCall, onGestureLearning, onSignDictionary }: HomeScreenProps = {}) {
+export default function HomeScreen({ onSignLanguageDemo, onRealSignLanguage, onBiDirectionalCall, onGestureLearning, onSignDictionary, onCCTV, onSTTTest }: HomeScreenProps = {}) {
   return (
     <View style={styles.container}>
       <StatusBar style="auto" />
@@ -181,6 +183,20 @@ export default function HomeScreen({ onSignLanguageDemo, onRealSignLanguage, onB
               <TouchableOpacity style={[styles.demoButton, styles.demoButton_webrtc]} onPress={onBiDirectionalCall}>
                 <Text style={styles.demoButtonText}>📹 실시간 수어 (양방향 커뮤니케이션)</Text>
                 <Text style={styles.demoButtonSub}>수어 ↔ 음성 WebRTC 영상통화</Text>
+              </TouchableOpacity>
+            )}
+
+            {onCCTV && (
+              <TouchableOpacity style={[styles.demoButton, styles.demoButton_cctv]} onPress={onCCTV}>
+                <Text style={styles.demoButtonText}>📹 CCTV 위험관제</Text>
+                <Text style={styles.demoButtonSub}>실시간 위험 감지 · 위치 알림</Text>
+              </TouchableOpacity>
+            )}
+
+            {onSTTTest && (
+              <TouchableOpacity style={[styles.demoButton, styles.demoButton_stt]} onPress={onSTTTest}>
+                <Text style={styles.demoButtonText}>🎙️ STT 음성인식 테스트</Text>
+                <Text style={styles.demoButtonSub}>버튼 누르고 발화 → Whisper 텍스트 변환</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -376,6 +392,12 @@ const styles = StyleSheet.create({
   },
   demoButton_webrtc: {
     backgroundColor: '#0D7A3E',
+  },
+  demoButton_cctv: {
+    backgroundColor: '#7c3aed',
+  },
+  demoButton_stt: {
+    backgroundColor: '#0e7490',
   },
   demoButtonText: {
     fontSize: fonts.sizes.base,

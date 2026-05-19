@@ -17,8 +17,10 @@ import RealSignLanguageScreen from './src/screens/demo/RealSignLanguageScreen';
 import BiDirectionalCallScreen from './src/screens/demo/BiDirectionalCallScreen';
 import GestureLearningScreen from './src/screens/learning/GestureLearningScreen';
 import SignDictionaryScreen from './src/screens/dictionary/SignDictionaryScreen';
+import CCTVMonitorScreen from './src/screens/cctv/CCTVMonitorScreen';
+import STTTestScreen from './src/screens/demo/STTTestScreen';
 
-type Screen = 'home' | 'login' | 'otp' | 'userType' | 'mainApp' | 'incomingCall' | 'outgoingCall' | 'activeCall' | 'signLanguageDemo' | 'realSignLanguage' | 'biDirectionalCall' | 'gestureLearning' | 'signDictionary';
+type Screen = 'home' | 'login' | 'otp' | 'userType' | 'mainApp' | 'incomingCall' | 'outgoingCall' | 'activeCall' | 'signLanguageDemo' | 'realSignLanguage' | 'biDirectionalCall' | 'gestureLearning' | 'signDictionary' | 'cctv' | 'sttTest';
 type UserType = 'deaf' | 'hearing' | null;
 
 export default function App() {
@@ -97,6 +99,14 @@ export default function App() {
     setCurrentScreen('signDictionary');
   };
 
+  const handleCCTV = () => {
+    setCurrentScreen('cctv');
+  };
+
+  const handleSTTTest = () => {
+    setCurrentScreen('sttTest');
+  };
+
   switch (currentScreen) {
     case 'login':
       return <LoginScreen onLogin={handleLogin} />;
@@ -160,6 +170,12 @@ export default function App() {
     case 'signDictionary':
       return <SignDictionaryScreen onBack={() => setCurrentScreen('home')} />;
 
+    case 'cctv':
+      return <CCTVMonitorScreen onBack={() => setCurrentScreen('home')} />;
+
+    case 'sttTest':
+      return <STTTestScreen onBack={() => setCurrentScreen('home')} />;
+
     case 'home':
     case 'mainApp':
       return (
@@ -169,6 +185,8 @@ export default function App() {
           onBiDirectionalCall={handleBiDirectionalCall}
           onGestureLearning={handleGestureLearning}
           onSignDictionary={handleSignDictionary}
+          onCCTV={handleCCTV}
+          onSTTTest={handleSTTTest}
         />
       );
 
