@@ -485,9 +485,10 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     let pendingGesture: string | null = null;
     let pendingStartTime = 0;
     let gestureGoneSince = 0;
-    const GESTURE_STABLE_MS = 700;
-    const SEND_COOLDOWN_MS  = 2000;
-    const GESTURE_RESET_MS  = 1000;
+    const GESTURE_STABLE_MS      = 700;
+    const SEND_COOLDOWN_MS       = 2000; // 새 수어 전송 최소 간격
+    const SAME_GESTURE_RESEND_MS = 4000; // 같은 수어 재전송 허용 시간
+    const GESTURE_RESET_MS       = 1000;
     // 모바일은 트래킹 품질이 낮아 스무딩을 더 강하게 적용
     const BB_ALPHA = isMobileWeb ? 0.15 : 0.25;
     let bbX = -1, bbY = 0, bbW = 0, bbH = 0;
@@ -581,13 +582,16 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
           ctx.font = 'bold 18px Arial';
           ctx.fillText(gesture, bbX + 8, bbY - 12);
 
-          // 전송 조건: ① 이전에 전송한 수어와 다른 경우 ② 최소 쿨다운 경과
-          const isNewGesture    = gesture !== lastSentGesture;
-          const cooldownPassed  = now - lastSentTime >= SEND_COOLDOWN_MS;
+          // 전송 조건:
+          // ① 새 수어 + 2초 쿨다운 경과
+          // ② 같은 수어도 4초 이상 경과 시 재전송 허용
+          const isNewGesture   = gesture !== lastSentGesture;
+          const cooldownPassed = now - lastSentTime >= SEND_COOLDOWN_MS;
+          const resendPassed   = now - lastSentTime >= SAME_GESTURE_RESEND_MS;
 
-          if (isNewGesture && cooldownPassed) {
-            // 다른 제스처가 확정되면 홀드 타이머 리셋 후 새로 시작
-            if (gesture !== transmitGesture) {
+          if (cooldownPassed && (isNewGesture || resendPassed)) {
+            // 새 제스처이거나 재전송 시 타이머 리셋 후 새로 시작
+            if (gesture !== transmitGesture || resendPassed) {
               if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
               transmitGesture = gesture;
               setCooldownActive(true);
