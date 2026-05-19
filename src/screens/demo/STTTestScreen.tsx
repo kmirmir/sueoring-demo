@@ -1,7 +1,7 @@
 /**
- * STTTestScreen - Whisper STT 단독 테스트
- * 버튼을 누르고 있는 동안 녹음 → 손 떼면 Whisper API 전송 → 텍스트 표시
- * recorder.stop() 방식으로 완전한 오디오 파일 생성 (헤더 포함)
+ * STTTestScreen - Whisper STT 스트리밍 테스트
+ * 버튼을 누르면 200ms 단위로 Whisper에 병렬 전송 → 실시간 텍스트 표시
+ * stop/start cycle 방식 (timeslice 미사용) → 완전한 WEBM 파일 보장
  */
 
 import React, { useState, useRef, useCallback } from 'react';
@@ -17,202 +17,167 @@ const SIGNAL_SERVER =
     ? 'https://sueoring-server.onrender.com'
     : 'http://localhost:3001';
 
+const SEGMENT_MS = 200;
+
 interface STTResult {
   id: number;
   text: string;
   ts: Date;
-  duration: number;
 }
 
 interface Props { onBack: () => void; }
 
 export default function STTTestScreen({ onBack }: Props) {
-  const [isRecording, setIsRecording]     = useState(false);
-  const [isProcessing, setIsProcessing]   = useState(false);
-  const [results, setResults]             = useState<STTResult[]>([]);
-  const [error, setError]                 = useState('');
+  const [isStreaming, setIsStreaming]   = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [results, setResults]          = useState<STTResult[]>([]);
+  const [error, setError]              = useState('');
 
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const streamRef        = useRef<MediaStream | null>(null);
-  const startTimeRef     = useRef<number>(0);
-  const resultIdRef      = useRef(0);
+  const streamRef      = useRef<MediaStream | null>(null);
+  const activeRef      = useRef(false);   // 스트리밍 중 여부
+  const resultIdRef    = useRef(0);
+  const doSegmentRef   = useRef<() => void>(() => {});
 
-  const startRecording = useCallback(async () => {
-    if (isRecording || isProcessing) return;
+  // 청크 하나를 백그라운드에서 Whisper로 전송
+  const processChunk = useCallback(async (blob: Blob, mimeBase: string, ext: string) => {
+    if (blob.size < 500) return;
+    setPendingCount(c => c + 1);
+    try {
+      const formData = new FormData();
+      formData.append('audio', new Blob([blob], { type: mimeBase }), `audio.${ext}`);
+      const response = await fetch(`${SIGNAL_SERVER}/api/stt`, { method: 'POST', body: formData });
+      const data = await response.json();
+      if (!response.ok) { setError(`서버 오류 (${response.status}): ${data.error ?? 'STT 실패'}`); return; }
+      const text = data.text?.trim();
+      if (!text) return;
+      setError('');
+      setResults(prev => [{ id: ++resultIdRef.current, text, ts: new Date() }, ...prev.slice(0, 49)]);
+    } catch (err) {
+      setError(`요청 실패: ${String(err)}`);
+    } finally {
+      setPendingCount(c => c - 1);
+    }
+  }, []);
+
+  const startStreaming = useCallback(async () => {
+    if (activeRef.current) return;
     try {
       setError('');
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
+      activeRef.current = true;
+      setIsStreaming(true);
 
       const mimeType =
         MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' :
         MediaRecorder.isTypeSupported('audio/webm')             ? 'audio/webm' :
         MediaRecorder.isTypeSupported('audio/mp4')              ? 'audio/mp4' :
         'audio/ogg';
+      const mimeBase = mimeType.split(';')[0];
+      const ext = mimeBase.includes('mp4') ? 'mp4' : mimeBase.includes('ogg') ? 'ogg' : 'webm';
 
-      const recorder = new MediaRecorder(stream, { mimeType });
-      mediaRecorderRef.current = recorder;
-      startTimeRef.current = Date.now();
-      recorder.start();
-      setIsRecording(true);
+      doSegmentRef.current = () => {
+        if (!activeRef.current || !streamRef.current) return;
+
+        const recorder = new MediaRecorder(streamRef.current, { mimeType });
+        recorder.addEventListener('dataavailable', (e) => {
+          processChunk(e.data, mimeBase, ext);
+          // 다음 세그먼트 즉시 시작
+          doSegmentRef.current();
+        }, { once: true });
+
+        recorder.start();
+        setTimeout(() => {
+          if (recorder.state === 'recording') recorder.stop();
+        }, SEGMENT_MS);
+      };
+
+      doSegmentRef.current();
     } catch {
       setError('마이크 권한을 허용해주세요.');
+      activeRef.current = false;
+      setIsStreaming(false);
     }
-  }, [isRecording, isProcessing]);
+  }, [processChunk]);
 
-  const stopRecording = useCallback(() => {
-    const recorder = mediaRecorderRef.current;
-    if (!recorder || recorder.state !== 'recording') return;
-
-    const duration = Date.now() - startTimeRef.current;
-    setIsRecording(false);
-
-    if (duration < 300) {
-      recorder.stop();
-      streamRef.current?.getTracks().forEach(t => t.stop());
-      setError('너무 짧습니다. 0.5초 이상 발화해주세요.');
-      return;
-    }
-
-    setIsProcessing(true);
-
-    const mimeBase = recorder.mimeType.split(';')[0];
-    const ext = mimeBase.includes('mp4') ? 'mp4' : mimeBase.includes('ogg') ? 'ogg' : 'webm';
-
-    recorder.ondataavailable = async (e) => {
-      streamRef.current?.getTracks().forEach(t => t.stop());
-
-      if (e.data.size < 500) {
-        setError('오디오 데이터가 너무 작습니다. 다시 시도해주세요.');
-        setIsProcessing(false);
-        return;
-      }
-
-      try {
-        const formData = new FormData();
-        formData.append('audio', new Blob([e.data], { type: mimeBase }), `audio.${ext}`);
-
-        const response = await fetch(`${SIGNAL_SERVER}/api/stt`, {
-          method: 'POST',
-          body: formData,
-        });
-        const data = await response.json();
-
-        if (!response.ok) {
-          setError(`서버 오류 (HTTP ${response.status}): ${data.error ?? 'STT 실패'}`);
-          return;
-        }
-
-        const text = data.text?.trim();
-        if (!text) {
-          setError('음성이 인식되지 않았습니다. 더 크고 명확하게 발화해주세요.');
-          return;
-        }
-
-        setError('');
-        setResults(prev => [{
-          id: ++resultIdRef.current,
-          text,
-          ts: new Date(),
-          duration,
-        }, ...prev.slice(0, 19)]);
-      } catch (err) {
-        setError(`요청 실패: ${String(err)}`);
-      } finally {
-        setIsProcessing(false);
-      }
-    };
-
-    recorder.stop();
+  const stopStreaming = useCallback(() => {
+    activeRef.current = false;
+    setIsStreaming(false);
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    streamRef.current = null;
   }, []);
+
+  const toggleStreaming = useCallback(() => {
+    if (activeRef.current) stopStreaming();
+    else startStreaming();
+  }, [startStreaming, stopStreaming]);
 
   const clearResults = () => setResults([]);
 
-  // ── 렌더 ─────────────────────────────────────────────────
+  const btnColor = isStreaming ? '#ef4444' : '#2563eb';
+  const btnEmoji = isStreaming ? '⏹️' : '🎙️';
+  const btnLabel = isStreaming
+    ? `🔴 스트리밍 중${pendingCount > 0 ? ` (처리 중 ${pendingCount}건)` : ''} — 누르면 중지`
+    : '버튼을 눌러 스트리밍 시작';
+
   return (
     <View style={styles.container}>
       <StatusBar style="light" />
 
-      {/* 헤더 */}
       <View style={styles.header}>
         <TouchableOpacity style={styles.backBtn} onPress={onBack}>
           <Text style={styles.backBtnText}>← 홈</Text>
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>🎙️ STT 테스트</Text>
+        <Text style={styles.headerTitle}>🎙️ STT 스트리밍 테스트</Text>
         <View style={{ width: 60 }} />
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
 
-        {/* 안내 */}
         <View style={styles.descBox}>
           <Text style={styles.descText}>
-            버튼을 <Text style={styles.bold}>누르고 있는 동안</Text> 발화하세요.{'\n'}
-            손을 떼면 Whisper가 텍스트로 변환합니다.
+            버튼을 누르면 <Text style={styles.bold}>{SEGMENT_MS}ms</Text> 단위로 Whisper에 전송합니다.{'\n'}
+            결과는 실시간으로 아래에 표시됩니다.
           </Text>
           <Text style={styles.descSub}>서버: {SIGNAL_SERVER}</Text>
         </View>
 
-        {/* 녹음 버튼 */}
         <View style={styles.btnArea}>
           {Platform.OS === 'web' ? (
-            // 웹: HTML button으로 mousedown/touchstart 처리
             <button
-              onMouseDown={startRecording}
-              onMouseUp={stopRecording}
-              onMouseLeave={stopRecording}
-              onTouchStart={startRecording}
-              onTouchEnd={stopRecording}
-              disabled={isProcessing}
+              onClick={toggleStreaming}
               style={{
                 width: 160, height: 160, borderRadius: '50%',
-                backgroundColor: isRecording ? '#ef4444' : isProcessing ? '#4b5563' : '#2563eb',
-                border: 'none', cursor: isProcessing ? 'wait' : 'pointer',
+                backgroundColor: btnColor,
+                border: 'none', cursor: 'pointer',
                 fontSize: 56, lineHeight: '160px',
-                boxShadow: isRecording
+                boxShadow: isStreaming
                   ? '0 0 0 16px rgba(239,68,68,0.25), 0 0 0 32px rgba(239,68,68,0.1)'
                   : '0 4px 32px rgba(0,0,0,0.4)',
                 transition: 'background-color 0.15s, box-shadow 0.15s',
                 userSelect: 'none',
-              } as any}
+              } as React.CSSProperties}
             >
-              {isProcessing ? '⏳' : isRecording ? '🔴' : '🎙️'}
+              {btnEmoji}
             </button>
           ) : (
             <TouchableOpacity
-              style={[
-                styles.micBtn,
-                isRecording  && styles.micBtnActive,
-                isProcessing && styles.micBtnProcessing,
-              ]}
-              onPressIn={startRecording}
-              onPressOut={stopRecording}
-              disabled={isProcessing}
+              style={[styles.micBtn, isStreaming && styles.micBtnActive]}
+              onPress={toggleStreaming}
               activeOpacity={0.8}
             >
-              <Text style={styles.micEmoji}>
-                {isProcessing ? '⏳' : isRecording ? '🔴' : '🎙️'}
-              </Text>
+              <Text style={styles.micEmoji}>{btnEmoji}</Text>
             </TouchableOpacity>
           )}
-
-          <Text style={styles.btnStatus}>
-            {isProcessing
-              ? '⏳ Whisper 변환 중...'
-              : isRecording
-              ? '🔴 녹음 중 — 손을 떼면 전송'
-              : '누르고 있는 동안 발화'}
-          </Text>
+          <Text style={styles.btnStatus}>{btnLabel}</Text>
         </View>
 
-        {/* 에러 */}
         {!!error && (
           <View style={styles.errorBox}>
             <Text style={styles.errorText}>⚠️ {error}</Text>
           </View>
         )}
 
-        {/* 결과 */}
         {results.length > 0 && (
           <View style={styles.resultSection}>
             <View style={styles.resultHeader}>
@@ -226,15 +191,13 @@ export default function STTTestScreen({ onBack }: Props) {
                 <Text style={styles.resultText}>"{r.text}"</Text>
                 <Text style={styles.resultMeta}>
                   {r.ts.toLocaleTimeString('ko-KR', { hour12: false })}
-                  {' · '}
-                  {(r.duration / 1000).toFixed(1)}초 녹음
                 </Text>
               </View>
             ))}
           </View>
         )}
 
-        {results.length === 0 && !isRecording && !isProcessing && !error && (
+        {results.length === 0 && !isStreaming && !error && (
           <View style={styles.emptyState}>
             <Text style={styles.emptyText}>결과가 여기에 표시됩니다</Text>
           </View>
@@ -275,9 +238,8 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 12,
   },
-  micBtnActive:      { backgroundColor: '#ef4444' },
-  micBtnProcessing:  { backgroundColor: '#4B5563' },
-  micEmoji:  { fontSize: 56 },
+  micBtnActive: { backgroundColor: '#ef4444' },
+  micEmoji: { fontSize: 56 },
   btnStatus: {
     color: '#9CA3AF', fontSize: fonts.sizes.base, marginTop: spacing.lg,
     textAlign: 'center', minHeight: 24,
