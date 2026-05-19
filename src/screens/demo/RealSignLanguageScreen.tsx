@@ -124,8 +124,8 @@ export default function RealSignLanguageScreen({ onBack }: RealSignLanguageScree
 
   // 제스처 안정화 필터 (연속 감지 확인)
   const gestureStabilityBufferRef = useRef<string[]>([]);
-  const STABILITY_THRESHOLD = 5; // 정적 수어 — 5프레임 연속 감지 필요
-  const MOTION_STABILITY_THRESHOLD = 3; // 모션 수어(흔들기) — 3프레임으로 완화 (pose 흔들림 보정)
+  const STABILITY_THRESHOLD = 10; // 정적 수어 — 10프레임 연속 감지 필요 (약 0.7초)
+  const MOTION_STABILITY_THRESHOLD = 5; // 모션 수어 — 5프레임으로 완화
   const MOTION_GESTURES = ['구급차', '급해요'];
   const [detectionQuality, setDetectionQuality] = useState<'excellent' | 'good' | 'poor' | 'none'>('none');
 
@@ -832,7 +832,7 @@ export default function RealSignLanguageScreen({ onBack }: RealSignLanguageScree
       // 안정적인 제스처만 큐에 추가
       if (isStable &&
           recognizedGesture !== lastRecognizedGestureRef.current &&
-          (now - lastRecognizedTimeRef.current) > 1000) {
+          (now - lastRecognizedTimeRef.current) > 2000) {
 
         // 마지막 인식 정보 업데이트
         lastRecognizedGestureRef.current = recognizedGesture;

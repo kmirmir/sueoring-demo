@@ -79,8 +79,8 @@ export default function SignLanguageDemoScreen({ onBack }: SignLanguageDemoScree
   const lastGestureTimeRef = useRef(0);
   const fpsCountRef        = useRef(0);
   const fpsTimeRef         = useRef(Date.now());
-  const STABILITY_FRAMES   = 5;
-  const COOLDOWN_MS        = 1200;
+  const STABILITY_FRAMES   = 12;  // 5 → 12 (약 0.8초 유지 필요)
+  const COOLDOWN_MS        = 2500; // 1200 → 2500ms
 
   // ── 정리 ──────────────────────────────────────────────
   const stopCamera = useCallback(() => {
