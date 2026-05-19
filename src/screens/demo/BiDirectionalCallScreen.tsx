@@ -17,7 +17,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { fonts, spacing } from '@/constants';
+import { fonts, spacing, STT_VAD } from '@/constants';
 import { io, Socket } from 'socket.io-client';
 
 // ── 상수 ──────────────────────────────────────────────────
@@ -34,11 +34,11 @@ const SIGNAL_SERVER =
     ? 'https://sueoring-server.onrender.com'  // 상용 서버 URL로 교체 필요
     : 'http://localhost:3001';
 
-// STT VAD 파라미터
-const STT_RMS_THRESHOLD = 0.015;  // 이 값 이하 → 침묵
-const STT_SILENCE_MS    = 600;    // 침묵 지속 시간 → 세그먼트 종료
-const STT_MIN_SEGMENT_MS = 300;   // 최소 세그먼트 길이
-const STT_MIN_VOICE_MS  = 200;    // RMS가 이 시간 이상 연속 초과해야 발화 인정
+// STT VAD 파라미터 — src/constants/stt.ts 공통값 사용
+const STT_RMS_THRESHOLD  = STT_VAD.RMS_THRESHOLD;
+const STT_SILENCE_MS     = STT_VAD.SILENCE_MS;
+const STT_MIN_SEGMENT_MS = STT_VAD.MIN_SEGMENT_MS;
+const STT_MIN_VOICE_MS   = STT_VAD.MIN_VOICE_MS;
 
 // STUN: 공개 IP 획득 / TURN: AP Isolation·NAT 헤어핀 실패 시 릴레이
 const ICE_SERVERS = [
@@ -146,6 +146,7 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const workingCdnRef   = useRef<string>(CDN_PROVIDERS[0]);
   const currentRoomRef  = useRef('');
   const messagesEndRef  = useRef<View>(null);
+  const chatScrollRef   = useRef<ScrollView>(null);
 
   // ── 정리 ────────────────────────────────────────────────
   const cleanup = useCallback(() => {
@@ -469,7 +470,9 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     hands.setOptions({ maxNumHands: 2, modelComplexity: 0, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
 
     // 클로저 지역 변수: React ref 대신 사용 → onResults 콜백 내에서 완전히 독립적으로 동작
-    let lastSentTime = 0;  // 마지막 제스처 전송 시각 (ms)
+    let holdTimer: ReturnType<typeof setTimeout> | null = null;
+    let pendingGesture: string | null = null;
+    const GESTURE_HOLD_MS = 2000;  // 같은 제스처 유지 시간 → 전송
 
     hands.onResults((results: any) => {
       if (!canvasRef.current || !localVideoRef.current) return;
@@ -508,30 +511,34 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
         ctx.fillStyle = '#000';
         ctx.font = 'bold 18px Arial';
         ctx.fillText(gesture, bx + 8, by - 12);
-        // 전역 2초 쿨다운: 클로저 지역 변수 사용 → React 렌더링과 무관하게 확실히 동작
-        const now = Date.now();
-        const inCooldown = now - lastSentTime < 2000;
-
-        if (!inCooldown) {
-          lastSentTime = now;  // 클로저 변수 직접 갱신
-          if (dcRef.current?.readyState === 'open') {
-            dcRef.current.send(JSON.stringify({ type: 'gesture', text: gesture }));
-          } else if (socketRef.current?.connected) {
-            socketRef.current.emit('room-text', { roomCode: currentRoomRef.current, type: 'gesture', text: gesture });
-          }
-          // 전송 확인 + 2초 쿨다운 UI 활성
+        // 제스처가 바뀌면 홀드 타이머 리셋, 같으면 유지
+        if (gesture !== pendingGesture) {
+          if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+          pendingGesture = gesture;
           setSentGestureLabel(gesture);
-          setCooldownActive(true);
-          setTimeout(() => setCooldownActive(false), 2000);
-          setTimeout(() => setSentGestureLabel(prev => prev === gesture ? '' : prev), 5000);
-          setMessages(prev => {
-            const last = prev[prev.length - 1];
-            if (last && last.from === 'me' && last.text === gesture && now - last.ts < 2000) return prev;
-            return [...prev, { text: gesture, from: 'me', ts: now }];
-          });
+          setCooldownActive(true);  // 대기 중 표시
+          const capturedGesture = gesture;
+          holdTimer = setTimeout(() => {
+            holdTimer = null;
+            pendingGesture = null;
+            const now = Date.now();
+            if (dcRef.current?.readyState === 'open') {
+              dcRef.current.send(JSON.stringify({ type: 'gesture', text: capturedGesture }));
+            } else if (socketRef.current?.connected) {
+              socketRef.current.emit('room-text', { roomCode: currentRoomRef.current, type: 'gesture', text: capturedGesture });
+            }
+            setCooldownActive(false);
+            setTimeout(() => setSentGestureLabel(prev => prev === capturedGesture ? '' : prev), 5000);
+            setMessages(prev => {
+              const last = prev[prev.length - 1];
+              if (last && last.from === 'me' && last.text === capturedGesture && now - last.ts < 2000) return prev;
+              return [...prev, { text: capturedGesture, from: 'me', ts: now }];
+            });
+          }, GESTURE_HOLD_MS);
         }
       } else {
         setGestureLabel('');
+        // 손이 사라져도 타이머 유지 — 2초 내 다른 제스처 인식 시에만 리셋
       }
     });
 
@@ -888,6 +895,11 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       .catch(() => setNeedsPlayTap(true));
   }, [remoteStream, relayMode]); // eslint-disable-line
 
+  // PC 채팅 패널 자동 스크롤
+  useEffect(() => {
+    if (!isMobileWeb) chatScrollRef.current?.scrollToEnd({ animated: true });
+  }, [messages]); // eslint-disable-line
+
   // ── 통화 종료 ────────────────────────────────────────────
   const handleEndCall = () => {
     cleanup();
@@ -1042,85 +1054,200 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
             </View>
           )}
 
-          {/* ── PC: 5:5 좌우 분할 ── */}
+          {/* ── PC: 영상(좌) + 채팅(우) 3열 레이아웃 ── */}
           {!isMobileWeb ? (
-            <View style={[styles.splitRow, { height: remoteVideoHeight }]}>
+            <View style={styles.pcRow}>
 
-              {/* 내 영상 (좌측 50%) */}
-              <View style={styles.splitPanel}>
-                <View style={styles.splitLabelBox}>
-                  <Text style={styles.splitLabelText}>
-                    {role === 'deaf' ? '🤟 나 (농인 · 수어 송신)' : '🗣️ 나 (청인 · 음성 송신)'}
-                  </Text>
+              {/* 영상 영역 (좌측) */}
+              <View style={styles.pcVideoCol}>
+                <View style={styles.splitRow}>
+
+                  {/* 내 영상 */}
+                  <View style={styles.splitPanel}>
+                    <View style={styles.splitLabelBox}>
+                      <Text style={styles.splitLabelText}>
+                        {role === 'deaf' ? '🤟 나 (농인 · 수어 송신)' : '🗣️ 나 (청인 · 음성 송신)'}
+                      </Text>
+                    </View>
+                    {Platform.OS === 'web' && (
+                      <>
+                        <video
+                          ref={localVideoRef as any}
+                          autoPlay playsInline muted
+                          style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }}
+                        />
+                        <canvas
+                          ref={canvasRef as any}
+                          style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}
+                        />
+                      </>
+                    )}
+                    {role === 'deaf' && !mpLoaded && (
+                      <View style={styles.splitMySub}>
+                        <Text style={styles.splitMySubText}>⏳ AI 로딩 중...</Text>
+                      </View>
+                    )}
+                  </View>
+
+                  <View style={styles.splitDivider} />
+
+                  {/* 상대방 영상 */}
+                  <View style={styles.splitPanel}>
+                    <View style={styles.splitLabelBox}>
+                      <Text style={styles.splitLabelText}>
+                        {role === 'deaf' ? '👤 상대방 (청인 · 자막 수신)' : '🤟 상대방 (농인 · 수어 송신)'}
+                      </Text>
+                    </View>
+                    {Platform.OS === 'web' && (
+                      <video
+                        ref={remoteVideoRef as any}
+                        autoPlay playsInline
+                        style={{ width: '100%', height: '100%', objectFit: 'cover',
+                                 ...(relayMode ? { display: 'none' } : {}) } as any}
+                      />
+                    )}
+                    {Platform.OS === 'web' && relayMode && (
+                      <canvas
+                        ref={remoteCanvasRef as any}
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' } as any}
+                      />
+                    )}
+                    {!remoteStream && !relayMode && (
+                      <View style={styles.videoPlaceholder}>
+                        <Text style={styles.videoPlaceholderText}>⏳ 연결 중...</Text>
+                        <Text style={{ color: '#888', fontSize: 12, marginTop: 8, textAlign: 'center' }}>상대방이 방 코드로 입장하면 자동 연결</Text>
+                        {!!iceState && <Text style={{ color: '#00AAFF', fontSize: 11, marginTop: 4 }}>ICE: {iceState}</Text>}
+                      </View>
+                    )}
+                    {remoteStream && needsPlayTap && (
+                      <TouchableOpacity
+                        style={{ ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}
+                        onPress={() => {
+                          const v = remoteVideoRef.current as any;
+                          if (v) { v.muted = false; v.play().then(() => setNeedsPlayTap(false)).catch(() => {}); }
+                        }}
+                      >
+                        <Text style={{ color: '#fff', fontSize: 18, fontWeight: 'bold' }}>▶ 탭하여 영상 재생</Text>
+                      </TouchableOpacity>
+                    )}
+                    {!!(role === 'deaf' ? gestureLabel : currentSub) && (
+                      <View style={styles.subOverlayTop}>
+                        <Text style={styles.subOverlayTopText} numberOfLines={2}>
+                          🤟 {role === 'deaf' ? gestureLabel : currentSub}
+                        </Text>
+                      </View>
+                    )}
+                    {role === 'deaf' && (!!sentGestureLabel || cooldownActive) && (
+                      <View style={[styles.sentBadge, cooldownActive && styles.sentBadgeCooldown]}>
+                        <Text style={styles.sentBadgeText}>
+                          {cooldownActive ? `⏳ 전송 대기: ${sentGestureLabel} (2초 후 전송)` : `📤 전송됨: ${sentGestureLabel}`}
+                        </Text>
+                      </View>
+                    )}
+                    {!!(role === 'deaf' ? currentSub : sttLive) && (
+                      <View style={styles.subOverlayBottom}>
+                        <Text style={styles.subOverlayBottomText} numberOfLines={2}>
+                          🗣️ {role === 'deaf' ? currentSub : sttLive}
+                        </Text>
+                        {isSpeaking && <Text style={styles.ttsActiveText}>🔊 음성 변환 중...</Text>}
+                      </View>
+                    )}
+                  </View>
                 </View>
-                {Platform.OS === 'web' && (
-                  <>
-                    <video
-                      ref={localVideoRef as any}
-                      autoPlay playsInline muted
-                      style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }}
-                    />
-                    <canvas
-                      ref={canvasRef as any}
-                      style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}
-                    />
-                  </>
-                )}
-                {/* AI 로딩 중일 때만 상태 표시 */}
-                {role === 'deaf' && !mpLoaded && (
-                  <View style={styles.splitMySub}>
-                    <Text style={styles.splitMySubText}>⏳ AI 로딩 중...</Text>
+
+                {/* STT 상태 바 (PC, 청인 전용) */}
+                {role === 'hearing' && (
+                  <View style={{ backgroundColor: '#111827' }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, gap: 8 }}>
+                      <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: sttReady ? '#00FF88' : '#FF5555' }} />
+                      <Text style={{ color: sttReady ? '#00FF88' : '#FF9900', fontSize: 12, flex: 1 }}>
+                        {sttReady ? '🎙️ STT 활성' : '🎙️ STT 비활성'}
+                      </Text>
+                      {!sttReady && (
+                        <TouchableOpacity
+                          style={{ backgroundColor: '#1D4ED8', paddingVertical: 4, paddingHorizontal: 10, borderRadius: 6 }}
+                          onPress={() => {
+                            sttActiveRef.current = false;
+                            if (sttRmsIntervalRef.current)  { clearInterval(sttRmsIntervalRef.current);  sttRmsIntervalRef.current  = null; }
+                            if (sttSilenceTimerRef.current) { clearTimeout(sttSilenceTimerRef.current);  sttSilenceTimerRef.current = null; }
+                            sttAudioCtxRef.current?.close(); sttAudioCtxRef.current = null;
+                            try { mediaRecorderRef.current?.stop(); mediaRecorderRef.current = null; } catch { /* 무시 */ }
+                            setTimeout(() => initSTT(), 100);
+                          }}
+                        >
+                          <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>STT 시작</Text>
+                        </TouchableOpacity>
+                      )}
+                      <TouchableOpacity
+                        style={{ backgroundColor: '#374151', paddingVertical: 4, paddingHorizontal: 8, borderRadius: 6 }}
+                        onPress={() => setShowDebug(p => !p)}
+                      >
+                        <Text style={{ color: '#9CA3AF', fontSize: 11 }}>{showDebug ? '로그숨김' : '로그보기'}</Text>
+                      </TouchableOpacity>
+                    </View>
+                    {showDebug && (
+                      <View style={{ backgroundColor: '#030712', paddingHorizontal: 10, paddingVertical: 6, maxHeight: 120 }}>
+                        <ScrollView>
+                          {debugLog.length === 0
+                            ? <Text style={{ color: '#4B5563', fontSize: 10 }}>로그 없음</Text>
+                            : debugLog.map((log, i) => (
+                                <Text key={i} style={{ color: '#00FF88', fontSize: 10, fontFamily: 'monospace', lineHeight: 16 }}>{log}</Text>
+                              ))
+                          }
+                        </ScrollView>
+                      </View>
+                    )}
                   </View>
                 )}
               </View>
 
-              {/* 구분선 */}
-              <View style={styles.splitDivider} />
-
-              {/* 상대방 영상 (우측 50%) */}
-              <View style={styles.splitPanel}>
-                <View style={styles.splitLabelBox}>
-                  <Text style={styles.splitLabelText}>
-                    {role === 'deaf' ? '👤 상대방 (청인 · 자막 수신)' : '🤟 상대방 (농인 · 수어 송신)'}
-                  </Text>
+              {/* 채팅 패널 (우측) */}
+              <View style={styles.pcChatCol}>
+                <View style={styles.chatHeader}>
+                  <Text style={styles.chatHeaderText}>💬 대화 이력</Text>
                 </View>
-                {/* 원격 비디오: 항상 DOM에 유지 (오디오 스트림 보존)
-                    릴레이 모드에서는 display:none으로 숨기고 캔버스가 시각적 표시 담당 */}
-                {Platform.OS === 'web' && (
-                  <video
-                    ref={remoteVideoRef as any}
-                    autoPlay playsInline
-                    style={{ width: '100%', height: '100%', objectFit: 'cover',
-                             ...(relayMode ? { display: 'none' } : {}) } as any}
-                  />
+                <ScrollView
+                  ref={chatScrollRef as any}
+                  style={styles.chatScroll}
+                  contentContainerStyle={{ padding: 10, paddingBottom: 24 }}
+                >
+                  {messages.length === 0 ? (
+                    <Text style={styles.chatEmpty}>대화 내용이 여기에 표시됩니다</Text>
+                  ) : (
+                    messages.map((m, i) => (
+                      <View key={i} style={[styles.chatBubbleRow, m.from === 'me' && styles.chatBubbleRowRight]}>
+                        <View style={[styles.chatBubble, m.from === 'me' ? styles.chatBubbleMe : styles.chatBubblePartner]}>
+                          <Text style={styles.chatBubbleText}>{m.text}</Text>
+                          <Text style={[styles.chatBubbleTime, m.from === 'me' && { textAlign: 'right' as any }]}>
+                            {new Date(m.ts).toLocaleTimeString('ko-KR', { hour12: false })}
+                          </Text>
+                        </View>
+                      </View>
+                    ))
+                  )}
+                </ScrollView>
+              </View>
+            </View>
+
+          ) : (
+            /* ── 모바일: 기존 PiP 레이아웃 유지 ── */
+            <>
+              <View style={[styles.remoteVideoBox, { height: remoteVideoHeight }]}>
+                {role === 'deaf' ? (
+                  Platform.OS === 'web' && (
+                    <>
+                      <video ref={localVideoRef as any} autoPlay playsInline muted
+                        style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }} />
+                      <canvas ref={canvasRef as any}
+                        style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }} />
+                    </>
+                  )
+                ) : (
+                  Platform.OS === 'web' ? (
+                    <video ref={localVideoRef as any} autoPlay playsInline muted
+                      style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }} />
+                  ) : null
                 )}
-                {/* 릴레이 모드: JPEG 프레임 캔버스 (시각만, 오디오는 위 video가 담당) */}
-                {Platform.OS === 'web' && relayMode && (
-                  <canvas
-                    ref={remoteCanvasRef as any}
-                    style={{ width: '100%', height: '100%', objectFit: 'cover' } as any}
-                  />
-                )}
-                {!remoteStream && !relayMode && (
-                  <View style={styles.videoPlaceholder}>
-                    <Text style={styles.videoPlaceholderText}>⏳ 연결 중...</Text>
-                    <Text style={{ color: '#888', fontSize: 12, marginTop: 8, textAlign: 'center' }}>상대방이 방 코드로 입장하면 자동 연결</Text>
-                    {!!iceState && <Text style={{ color: '#00AAFF', fontSize: 11, marginTop: 4 }}>ICE: {iceState}</Text>}
-                  </View>
-                )}
-                {/* 자동재생 차단 시 탭하여 재생 버튼 */}
-                {remoteStream && needsPlayTap && (
-                  <TouchableOpacity
-                    style={{ ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}
-                    onPress={() => {
-                      const v = remoteVideoRef.current as any;
-                      if (v) { v.muted = false; v.play().then(() => setNeedsPlayTap(false)).catch(() => {}); }
-                    }}
-                  >
-                    <Text style={{ color: '#fff', fontSize: 18, fontWeight: 'bold' }}>▶ 탭하여 영상 재생</Text>
-                  </TouchableOpacity>
-                )}
-                {/* 상단 자막: 🤟 농인 수어 인식 결과 (실시간) */}
                 {!!(role === 'deaf' ? gestureLabel : currentSub) && (
                   <View style={styles.subOverlayTop}>
                     <Text style={styles.subOverlayTopText} numberOfLines={2}>
@@ -1128,171 +1255,106 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                     </Text>
                   </View>
                 )}
-                {/* 전송 확인 뱃지 / 쿨다운 표시 (농인 전용) */}
                 {role === 'deaf' && (!!sentGestureLabel || cooldownActive) && (
                   <View style={[styles.sentBadge, cooldownActive && styles.sentBadgeCooldown]}>
                     <Text style={styles.sentBadgeText}>
-                      {cooldownActive ? `⏸ 전송됨: ${sentGestureLabel} (대기 중...)` : `📤 전송됨: ${sentGestureLabel}`}
+                      {cooldownActive ? `⏳ 전송 대기: ${sentGestureLabel} (2초 후 전송)` : `📤 전송됨: ${sentGestureLabel}`}
                     </Text>
                   </View>
                 )}
-                {/* 하단 자막: 🗣️ 청인 발화 인식 결과 */}
                 {!!(role === 'deaf' ? currentSub : sttLive) && (
                   <View style={styles.subOverlayBottom}>
                     <Text style={styles.subOverlayBottomText} numberOfLines={2}>
                       🗣️ {role === 'deaf' ? currentSub : sttLive}
                     </Text>
-                    {isSpeaking && (
-                      <Text style={styles.ttsActiveText}>🔊 음성 변환 중...</Text>
-                    )}
+                    {isSpeaking && <Text style={styles.ttsActiveText}>🔊 음성 변환 중...</Text>}
+                  </View>
+                )}
+                <View style={styles.localPip}>
+                  {Platform.OS === 'web' && (
+                    <>
+                      <video ref={remoteVideoRef as any} autoPlay playsInline
+                        style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8,
+                                 ...(relayMode ? { display: 'none' } : {}) } as any} />
+                      {relayMode && (
+                        <canvas ref={remoteCanvasRef as any}
+                          style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8 } as any} />
+                      )}
+                    </>
+                  )}
+                </View>
+                {role === 'deaf' && !mpLoaded && (
+                  <View style={[styles.mobileMySub, { bottom: 0, top: undefined }]}>
+                    <Text style={styles.mobileMySubText}>⏳ AI 로딩 중...</Text>
                   </View>
                 )}
               </View>
-            </View>
-          ) : (
-            /* ── 모바일: PiP 레이아웃
-               농인: 청인 영상(원격) 메인 + 본인 PiP
-               청인: 청인 영상(본인) 메인 + 농인(원격) PiP  ← Option B
-            ── */
-            <View style={[styles.remoteVideoBox, { height: remoteVideoHeight }]}>
 
-              {/* ── 메인 화면 ──
-                  농인: 본인 영상 메인 (손 크게 보여 수어 인식 확인 최적화) + 수어 캔버스
-                  청인: 본인 영상 메인 (Option B)
-              ── */}
-              {role === 'deaf' ? (
-                Platform.OS === 'web' && (
-                  <>
-                    <video ref={localVideoRef as any} autoPlay playsInline muted
-                      style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }} />
-                    <canvas ref={canvasRef as any}
-                      style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }} />
-                  </>
-                )
-              ) : (
-                // 청인: 본인 영상이 메인 (Option B)
-                Platform.OS === 'web' ? (
-                  <video ref={localVideoRef as any} autoPlay playsInline muted
-                    style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }} />
-                ) : null
-              )}
-
-              {/* ── 메인 화면 상단 자막: 🤟 농인 수어 (실시간) ── */}
-              {!!(role === 'deaf' ? gestureLabel : currentSub) && (
-                <View style={styles.subOverlayTop}>
-                  <Text style={styles.subOverlayTopText} numberOfLines={2}>
-                    🤟 {role === 'deaf' ? gestureLabel : currentSub}
-                  </Text>
-                </View>
-              )}
-
-              {/* 전송 확인 뱃지 / 쿨다운 표시 (농인 전용) */}
-              {role === 'deaf' && (!!sentGestureLabel || cooldownActive) && (
-                <View style={[styles.sentBadge, cooldownActive && styles.sentBadgeCooldown]}>
-                  <Text style={styles.sentBadgeText}>
-                    {cooldownActive ? `⏸ 전송됨: ${sentGestureLabel} (대기 중...)` : `📤 전송됨: ${sentGestureLabel}`}
-                  </Text>
-                </View>
-              )}
-
-              {/* ── 메인 화면 하단 자막: 🗣️ 청인 발화 ── */}
-              {!!(role === 'deaf' ? currentSub : sttLive) && (
-                <View style={styles.subOverlayBottom}>
-                  <Text style={styles.subOverlayBottomText} numberOfLines={2}>
-                    🗣️ {role === 'deaf' ? currentSub : sttLive}
-                  </Text>
-                  {isSpeaking && (
-                    <Text style={styles.ttsActiveText}>🔊 음성 변환 중...</Text>
+              {/* STT 상태 바 (모바일, 청인 전용) */}
+              {role === 'hearing' && (
+                <View style={{ backgroundColor: '#111827' }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, gap: 8 }}>
+                    <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: sttReady ? '#00FF88' : '#FF5555' }} />
+                    <Text style={{ color: sttReady ? '#00FF88' : '#FF9900', fontSize: 12, flex: 1 }}>
+                      {sttReady ? '🎙️ STT 활성' : '🎙️ STT 비활성'}
+                    </Text>
+                    {!sttReady && (
+                      <TouchableOpacity
+                        style={{ backgroundColor: '#1D4ED8', paddingVertical: 4, paddingHorizontal: 10, borderRadius: 6 }}
+                        onPress={() => {
+                          sttActiveRef.current = false;
+                          if (sttRmsIntervalRef.current)  { clearInterval(sttRmsIntervalRef.current);  sttRmsIntervalRef.current  = null; }
+                          if (sttSilenceTimerRef.current) { clearTimeout(sttSilenceTimerRef.current);  sttSilenceTimerRef.current = null; }
+                          sttAudioCtxRef.current?.close(); sttAudioCtxRef.current = null;
+                          try { mediaRecorderRef.current?.stop(); mediaRecorderRef.current = null; } catch { /* 무시 */ }
+                          setTimeout(() => initSTT(), 100);
+                        }}
+                      >
+                        <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>STT 시작</Text>
+                      </TouchableOpacity>
+                    )}
+                    <TouchableOpacity
+                      style={{ backgroundColor: '#374151', paddingVertical: 4, paddingHorizontal: 8, borderRadius: 6 }}
+                      onPress={() => setShowDebug(p => !p)}
+                    >
+                      <Text style={{ color: '#9CA3AF', fontSize: 11 }}>{showDebug ? '로그숨김' : '로그보기'}</Text>
+                    </TouchableOpacity>
+                  </View>
+                  {showDebug && (
+                    <View style={{ backgroundColor: '#030712', paddingHorizontal: 10, paddingVertical: 6, maxHeight: 150 }}>
+                      <ScrollView>
+                        {debugLog.length === 0
+                          ? <Text style={{ color: '#4B5563', fontSize: 10 }}>로그 없음</Text>
+                          : debugLog.map((log, i) => (
+                              <Text key={i} style={{ color: '#00FF88', fontSize: 10, fontFamily: 'monospace', lineHeight: 16 }}>{log}</Text>
+                            ))
+                        }
+                      </ScrollView>
+                    </View>
                   )}
                 </View>
               )}
 
-              {/* ── PiP: 상대방 영상 ── */}
-              {/* 농인: 청인 원격 영상 PiP (항상 DOM 유지 — 오디오 보존)
-                  청인: 농인 원격 영상 PiP (항상 DOM 유지 — 오디오 보존) */}
-              <View style={styles.localPip}>
-                {Platform.OS === 'web' && (
-                  <>
-                    <video ref={remoteVideoRef as any} autoPlay playsInline
-                      style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8,
-                               ...(relayMode ? { display: 'none' } : {}) } as any} />
-                    {relayMode && (
-                      <canvas ref={remoteCanvasRef as any}
-                        style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8 } as any} />
-                    )}
-                  </>
-                )}
+              {/* 하단 대화 기록 (모바일) */}
+              <View style={styles.bottomPanel}>
+                <ScrollView style={styles.msgList} contentContainerStyle={{ paddingVertical: 4 }}>
+                  {messages.length === 0 ? (
+                    <Text style={styles.msgEmpty}>대화 내용이 여기에 표시됩니다</Text>
+                  ) : (
+                    messages.map((m, i) => (
+                      <View key={i} style={[styles.msgBubble, m.from === 'me' ? styles.msgMe : styles.msgPartner]}>
+                        <Text style={styles.msgText}>{m.from === 'me' ? '나' : '상대방'}: {m.text}</Text>
+                        <Text style={{ color: 'rgba(255,255,255,0.4)', fontSize: 10, marginTop: 2 }}>
+                          {new Date(m.ts).toLocaleTimeString('ko-KR', { hour12: false })}
+                        </Text>
+                      </View>
+                    ))
+                  )}
+                  <View ref={messagesEndRef as any} />
+                </ScrollView>
               </View>
-
-              {/* AI 로딩 표시 (농인 화면) */}
-              {role === 'deaf' && !mpLoaded && (
-                <View style={[styles.mobileMySub, { bottom: 0, top: undefined }]}>
-                  <Text style={styles.mobileMySubText}>⏳ AI 로딩 중...</Text>
-                </View>
-              )}
-            </View>
+            </>
           )}
-
-          {/* 청인 전용: STT 상태 표시 + 수동 활성화 + 디버그 패널 */}
-          {role === 'hearing' && (
-            <View style={{ backgroundColor: '#111827' }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, gap: 8 }}>
-                <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: sttReady ? '#00FF88' : '#FF5555' }} />
-                <Text style={{ color: sttReady ? '#00FF88' : '#FF9900', fontSize: 12, flex: 1 }}>
-                  {sttReady ? '🎙️ STT 활성' : '🎙️ STT 비활성'}
-                </Text>
-                {!sttReady && (
-                  <TouchableOpacity
-                    style={{ backgroundColor: '#1D4ED8', paddingVertical: 4, paddingHorizontal: 10, borderRadius: 6 }}
-                    onPress={() => {
-                      sttActiveRef.current = false;
-                      if (sttRmsIntervalRef.current)  { clearInterval(sttRmsIntervalRef.current);  sttRmsIntervalRef.current  = null; }
-                      if (sttSilenceTimerRef.current) { clearTimeout(sttSilenceTimerRef.current);  sttSilenceTimerRef.current = null; }
-                      sttAudioCtxRef.current?.close(); sttAudioCtxRef.current = null;
-                      try { mediaRecorderRef.current?.stop(); mediaRecorderRef.current = null; } catch { /* 무시 */ }
-                      setTimeout(() => initSTT(), 100);
-                    }}
-                  >
-                    <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>STT 시작</Text>
-                  </TouchableOpacity>
-                )}
-                <TouchableOpacity
-                  style={{ backgroundColor: '#374151', paddingVertical: 4, paddingHorizontal: 8, borderRadius: 6 }}
-                  onPress={() => setShowDebug(p => !p)}
-                >
-                  <Text style={{ color: '#9CA3AF', fontSize: 11 }}>{showDebug ? '로그숨김' : '로그보기'}</Text>
-                </TouchableOpacity>
-              </View>
-              {showDebug && (
-                <View style={{ backgroundColor: '#030712', paddingHorizontal: 10, paddingVertical: 6, maxHeight: 150 }}>
-                  <ScrollView>
-                    {debugLog.length === 0
-                      ? <Text style={{ color: '#4B5563', fontSize: 10 }}>로그 없음</Text>
-                      : debugLog.map((log, i) => (
-                          <Text key={i} style={{ color: '#00FF88', fontSize: 10, fontFamily: 'monospace', lineHeight: 16 }}>{log}</Text>
-                        ))
-                    }
-                  </ScrollView>
-                </View>
-              )}
-            </View>
-          )}
-
-          {/* 하단 대화 기록 (내 송신 상태는 영상 오버레이로 이동) */}
-          <View style={styles.bottomPanel}>
-            <ScrollView style={styles.msgList} contentContainerStyle={{ paddingVertical: 4 }}>
-              {messages.length === 0 ? (
-                <Text style={styles.msgEmpty}>대화 내용이 여기에 표시됩니다</Text>
-              ) : (
-                messages.map((m, i) => (
-                  <View key={i} style={[styles.msgBubble, m.from === 'me' ? styles.msgMe : styles.msgPartner]}>
-                    <Text style={styles.msgText}>{m.from === 'me' ? '나' : '상대방'}: {m.text}</Text>
-                  </View>
-                ))
-              )}
-              <View ref={messagesEndRef as any} />
-            </ScrollView>
-          </View>
         </View>
       )}
     </View>
@@ -1440,7 +1502,69 @@ const styles = StyleSheet.create({
   roleBadgeText: { color: '#FFFFFF', fontSize: fonts.sizes.base },
 
   // ── Calling ──
-  callingContainer: { flex: 1 },
+  callingContainer: { flex: 1, flexDirection: 'column' },
+
+  // PC 3열 레이아웃
+  pcRow: { flex: 1, flexDirection: 'row' },
+  pcVideoCol: { flex: 2, flexDirection: 'column' },
+  pcChatCol: {
+    width: 300,
+    backgroundColor: '#0F1628',
+    borderLeftWidth: 1,
+    borderLeftColor: '#2D3561',
+    flexDirection: 'column',
+  },
+  chatHeader: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#2D3561',
+    backgroundColor: '#1A1F3A',
+  },
+  chatHeaderText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700' as any,
+  },
+  chatScroll: { flex: 1 },
+  chatEmpty: {
+    color: '#4B5563',
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 24,
+  },
+  chatBubbleRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-start',
+    marginBottom: 8,
+  },
+  chatBubbleRowRight: { justifyContent: 'flex-end' },
+  chatBubble: {
+    maxWidth: '88%',
+    borderRadius: 14,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  chatBubbleMe: {
+    backgroundColor: '#2563EB',
+    borderBottomRightRadius: 4,
+  },
+  chatBubblePartner: {
+    backgroundColor: '#1F2937',
+    borderBottomLeftRadius: 4,
+    borderWidth: 1,
+    borderColor: '#374151',
+  },
+  chatBubbleText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  chatBubbleTime: {
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: 10,
+    marginTop: 4,
+  },
 
   // 수신 자막 바 — 헤더 바로 아래 정상 흐름으로 배치 (absolute 아님)
   topSubBar: {
@@ -1465,8 +1589,9 @@ const styles = StyleSheet.create({
     fontWeight: fonts.weights.medium,
   },
 
-  // PC 5:5 분할
+  // PC 영상 분할
   splitRow: {
+    flex: 1,
     flexDirection: 'row',
     backgroundColor: '#000',
   },
