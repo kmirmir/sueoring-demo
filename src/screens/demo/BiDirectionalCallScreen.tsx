@@ -454,10 +454,14 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     hands.setOptions({ maxNumHands: 2, modelComplexity: 0, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
 
     // 클로저 지역 변수
-    let lastSentTime = 0;       // 마지막 전송 시각
+    let lastSentTime = 0;                     // 마지막 전송 시각
+    let lastSentGesture: string | null = null; // 마지막 실제 전송된 제스처
     let pendingGesture: string | null = null;  // 안정화 대기 중인 제스처
-    let pendingStartTime = 0;   // 대기 시작 시각
-    const GESTURE_STABLE_MS = 700; // 이 시간(ms) 동안 같은 제스처 유지 시 확정
+    let pendingStartTime = 0;                  // 대기 시작 시각
+    let gestureGoneSince = 0;                  // 손 감지 소실 시작 시각
+    const GESTURE_STABLE_MS = 700;  // 같은 제스처 유지 시간
+    const SEND_COOLDOWN_MS  = 2000; // 연속 전송 방지 최소 간격
+    const GESTURE_RESET_MS  = 1000; // 손 소실 후 lastSentGesture 리셋 시간
 
     hands.onResults((results: any) => {
       if (!canvasRef.current || !localVideoRef.current) return;
@@ -469,12 +473,18 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       canvas.height = localVideoRef.current.videoHeight || canvas.clientHeight;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+      const now = Date.now();
+
       if (!results.multiHandLandmarks?.length) {
         pendingGesture = null;
         pendingStartTime = 0;
+        // 손 소실 1초 후 lastSentGesture 리셋 → 같은 수어 재사용 가능
+        if (!gestureGoneSince) gestureGoneSince = now;
+        if (now - gestureGoneSince >= GESTURE_RESET_MS) lastSentGesture = null;
         setGestureLabel('');
         return;
       }
+      gestureGoneSince = 0; // 손 감지됨 → 소실 타이머 리셋
 
       const landmarks = results.multiHandLandmarks[0];
 
@@ -492,21 +502,20 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
 
       // 제스처 인식 + 시간 기반 안정화
       const gesture = recognizeGesture(landmarks);
-      const now = Date.now();
 
       if (gesture) {
-        // 다른 제스처가 감지되면 대기 타이머 리셋
+        // 다른 제스처로 전환 시 대기 타이머 리셋
         if (gesture !== pendingGesture) {
           pendingGesture = gesture;
           pendingStartTime = now;
-          setGestureLabel(''); // 새 제스처 전환 시 라벨 초기화
+          setGestureLabel('');
         }
 
         const elapsed = now - pendingStartTime;
         const confirmed = elapsed >= GESTURE_STABLE_MS;
 
         if (confirmed) {
-          // 안정화 완료 → 라벨 표시
+          // 안정화 완료 → 바운딩 박스 라벨 표시
           setGestureLabel(gesture);
           ctx.fillStyle = 'rgba(0,255,136,0.85)';
           ctx.fillRect(bx, by - 36, Math.max(bw, 120), 32);
@@ -514,10 +523,13 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
           ctx.font = 'bold 18px Arial';
           ctx.fillText(gesture, bx + 8, by - 12);
 
-          // 전송 쿨다운 (2초)
-          const inCooldown = now - lastSentTime < 2000;
-          if (!inCooldown) {
-            lastSentTime = now;
+          // 전송 조건: ① 이전에 전송한 수어와 다른 경우 ② 최소 쿨다운 경과
+          const isNewGesture    = gesture !== lastSentGesture;
+          const cooldownPassed  = now - lastSentTime >= SEND_COOLDOWN_MS;
+
+          if (isNewGesture && cooldownPassed) {
+            lastSentTime    = now;
+            lastSentGesture = gesture; // 전송 기록 → 같은 수어 반복 전송 방지
             if (dcRef.current?.readyState === 'open') {
               dcRef.current.send(JSON.stringify({ type: 'gesture', text: gesture }));
             } else if (socketRef.current?.connected) {
