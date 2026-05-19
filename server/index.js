@@ -66,10 +66,11 @@ app.post('/api/stt', upload.single('audio'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'audio file required' });
   if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'OpenAI API key not configured' });
   try {
-    const ext = req.file.mimetype.includes('mp4') ? 'mp4'
-              : req.file.mimetype.includes('ogg')  ? 'ogg'
+    const mimeBase = req.file.mimetype.split(';')[0]; // 'audio/webm;codecs=opus' → 'audio/webm'
+    const ext = mimeBase.includes('mp4') ? 'mp4'
+              : mimeBase.includes('ogg') ? 'ogg'
               : 'webm';
-    const file = await toFile(req.file.buffer, `audio.${ext}`, { type: req.file.mimetype });
+    const file = await toFile(req.file.buffer, `audio.${ext}`, { type: mimeBase });
     const transcription = await openai.audio.transcriptions.create({
       file,
       model: 'whisper-1',
