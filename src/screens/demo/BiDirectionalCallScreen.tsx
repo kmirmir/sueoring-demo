@@ -438,9 +438,13 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   // ── 카메라 시작 ──────────────────────────────────────────
   const startCamera = async () => {
     try {
+      // 모바일: 해상도 제약 없이 facingMode만 지정 (portrait/landscape 자동 처리)
+      // PC: 640×480 ideal로 안정적인 해상도 요청
+      const videoConstraints: MediaTrackConstraints = isMobileWeb
+        ? { facingMode: 'user' }
+        : { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' };
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
-        // 에코캔슬레이션·노이즈억제 명시적 활성화 → TTS 하울링 하드웨어 수준 차단
+        video: videoConstraints,
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       localStreamRef.current = stream;   // 별도 ref에 보존
@@ -466,7 +470,13 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       locateFile: (f: string) =>
         `${workingCdnRef.current}/@mediapipe/hands@${MEDIAPIPE_HANDS_VERSION}/${f}`,
     });
-    hands.setOptions({ maxNumHands: 2, modelComplexity: 0, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+    // 모바일은 카메라 품질이 낮아 임계값 완화
+    hands.setOptions({
+      maxNumHands: 2,
+      modelComplexity: 0,
+      minDetectionConfidence: isMobileWeb ? 0.4 : 0.5,
+      minTrackingConfidence: isMobileWeb ? 0.35 : 0.5,
+    });
 
     // 클로저 지역 변수
     let lastSentTime = 0;
@@ -477,9 +487,9 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     const GESTURE_STABLE_MS = 700;
     const SEND_COOLDOWN_MS  = 2000;
     const GESTURE_RESET_MS  = 1000;
-    // 바운딩 박스 스무딩 (EMA) — 떨림 방지
-    const BB_ALPHA = 0.25; // 낮을수록 더 부드러움 (0.1~0.4 권장)
-    let bbX = -1, bbY = 0, bbW = 0, bbH = 0; // -1 = 미초기화
+    // 모바일은 트래킹 품질이 낮아 스무딩을 더 강하게 적용
+    const BB_ALPHA = isMobileWeb ? 0.15 : 0.25;
+    let bbX = -1, bbY = 0, bbW = 0, bbH = 0;
 
     hands.onResults((results: any) => {
       if (!canvasRef.current || !localVideoRef.current) return;
@@ -487,16 +497,19 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      canvas.width  = localVideoRef.current.videoWidth  || canvas.clientWidth;
-      canvas.height = localVideoRef.current.videoHeight || canvas.clientHeight;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      // 캔버스를 컨테이너 크기로 설정 (video objectFit:cover와 좌표계 일치)
+      const canvasW = canvas.clientWidth  || 640;
+      const canvasH = canvas.clientHeight || 480;
+      if (canvas.width !== canvasW)  canvas.width  = canvasW;
+      if (canvas.height !== canvasH) canvas.height = canvasH;
+      ctx.clearRect(0, 0, canvasW, canvasH);
 
       const now = Date.now();
 
       if (!results.multiHandLandmarks?.length) {
         pendingGesture = null;
         pendingStartTime = 0;
-        bbX = -1; // 손 소실 시 스무딩 초기화
+        bbX = -1;
         if (!gestureGoneSince) gestureGoneSince = now;
         if (now - gestureGoneSince >= GESTURE_RESET_MS) lastSentGesture = null;
         setGestureLabel('');
@@ -506,18 +519,29 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
 
       const landmarks = results.multiHandLandmarks[0];
 
+      // objectFit:cover 좌표 보정 — 비디오와 캔버스 좌표계 일치
+      const vw = localVideoRef.current.videoWidth  || canvasW;
+      const vh = localVideoRef.current.videoHeight || canvasH;
+      const coverScale = Math.max(canvasW / vw, canvasH / vh);
+      const ox = (canvasW - vw * coverScale) / 2;
+      const oy = (canvasH - vh * coverScale) / 2;
+      // 정규화 좌표 → 캔버스 픽셀 (x는 미러 반전)
+      const toPx = (nx: number, ny: number) => ({
+        x: (1 - nx) * vw * coverScale + ox,
+        y: ny * vh * coverScale + oy,
+      });
+
       // 바운딩 박스 원시 좌표 계산
       let minX = 1, minY = 1, maxX = 0, maxY = 0;
       landmarks.forEach((lm: any) => {
         minX = Math.min(minX, lm.x); minY = Math.min(minY, lm.y);
         maxX = Math.max(maxX, lm.x); maxY = Math.max(maxY, lm.y);
       });
-      const rawBx = (1 - maxX) * canvas.width;
-      const rawBy = minY * canvas.height;
-      const rawBw = (maxX - minX) * canvas.width;
-      const rawBh = (maxY - minY) * canvas.height;
+      const { x: rawBx, y: rawBy } = toPx(maxX, minY); // maxX → 미러 시 시각적 좌측
+      const rawBw = (maxX - minX) * vw * coverScale;
+      const rawBh = (maxY - minY) * vh * coverScale;
 
-      // EMA 스무딩 적용 (첫 프레임은 원시값으로 초기화)
+      // EMA 스무딩
       if (bbX < 0) { bbX = rawBx; bbY = rawBy; bbW = rawBw; bbH = rawBh; }
       else {
         bbX = BB_ALPHA * rawBx + (1 - BB_ALPHA) * bbX;
