@@ -1,6 +1,6 @@
 /**
  * STTTestScreen - VAD(Voice Activity Detection) 기반 Whisper STT
- * RMS가 threshold 이하로 N ms 지속되면 세그먼트 종료 → Whisper 전송
+ * RMS threshold / 침묵 판정 시간 / 최소 세그먼트 길이를 화면에서 실시간 조정 가능
  */
 
 import React, { useState, useRef, useCallback } from 'react';
@@ -16,9 +16,10 @@ const SIGNAL_SERVER =
     ? 'https://sueoring-server.onrender.com'
     : 'http://localhost:3001';
 
-const RMS_THRESHOLD      = 0.015;  // 이 값 이하 → 침묵
-const SILENCE_DURATION_MS = 600;   // 침묵이 이 시간 지속되면 세그먼트 종료
-const MIN_SEGMENT_MS      = 300;   // 이보다 짧은 세그먼트는 전송하지 않음
+// 기본값
+const DEFAULT_RMS_THRESHOLD    = 0.015;
+const DEFAULT_SILENCE_DURATION = 600;
+const DEFAULT_MIN_SEGMENT      = 300;
 
 interface STTResult {
   id: number;
@@ -28,27 +29,110 @@ interface STTResult {
 
 interface Props { onBack: () => void; }
 
-export default function STTTestScreen({ onBack }: Props) {
-  const [isStreaming, setIsStreaming]     = useState(false);
-  const [isVoiceActive, setIsVoiceActive] = useState(false);
-  const [rmsLevel, setRmsLevel]          = useState(0);
-  const [pendingCount, setPendingCount]  = useState(0);
-  const [results, setResults]            = useState<STTResult[]>([]);
-  const [error, setError]                = useState('');
+// ── 설정 행 컴포넌트 ──────────────────────────────────────────
+interface SettingRowProps {
+  label: string;
+  value: number;
+  display: string;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (v: number) => void;
+}
+function SettingRow({ label, value, display, min, max, step, onChange }: SettingRowProps) {
+  const dec = () => onChange(Math.max(min, parseFloat((value - step).toFixed(4))));
+  const inc = () => onChange(Math.min(max, parseFloat((value + step).toFixed(4))));
 
-  const activeRef        = useRef(false);
-  const streamRef        = useRef<MediaStream | null>(null);
-  const audioCtxRef      = useRef<AudioContext | null>(null);
-  const analyserRef      = useRef<AnalyserNode | null>(null);
-  const recorderRef      = useRef<MediaRecorder | null>(null);
-  const mimeBaseRef      = useRef('audio/webm');
-  const extRef           = useRef('webm');
-  const mimeTypeRef      = useRef('audio/webm');
-  const silenceTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const rmsIntervalRef   = useRef<ReturnType<typeof setInterval> | null>(null);
-  const segmentStartRef  = useRef(0);
-  const hasSoundRef      = useRef(false);
-  const resultIdRef      = useRef(0);
+  return (
+    <View style={settingStyles.row}>
+      <Text style={settingStyles.label}>{label}</Text>
+      <View style={settingStyles.controls}>
+        {Platform.OS === 'web' ? (
+          <>
+            <input
+              type="range"
+              min={min} max={max} step={step}
+              value={value}
+              onChange={e => onChange(parseFloat(e.target.value))}
+              style={{ flex: 1, accentColor: '#60A5FA', margin: '0 8px' } as React.CSSProperties}
+            />
+            <Text style={settingStyles.valueText}>{display}</Text>
+          </>
+        ) : (
+          <>
+            <TouchableOpacity style={settingStyles.btn} onPress={dec}>
+              <Text style={settingStyles.btnText}>−</Text>
+            </TouchableOpacity>
+            <Text style={settingStyles.valueText}>{display}</Text>
+            <TouchableOpacity style={settingStyles.btn} onPress={inc}>
+              <Text style={settingStyles.btnText}>+</Text>
+            </TouchableOpacity>
+          </>
+        )}
+      </View>
+    </View>
+  );
+}
+
+const settingStyles = StyleSheet.create({
+  row: {
+    flexDirection: 'row', alignItems: 'center',
+    marginBottom: spacing.sm,
+  },
+  label: {
+    color: '#9CA3AF', fontSize: fonts.sizes.sm,
+    width: 100,
+  },
+  controls: {
+    flex: 1, flexDirection: 'row', alignItems: 'center',
+  },
+  valueText: {
+    color: '#FFFFFF', fontSize: fonts.sizes.sm,
+    fontWeight: fonts.weights.semibold,
+    minWidth: 60, textAlign: 'right',
+  },
+  btn: {
+    backgroundColor: '#374151', width: 32, height: 32,
+    borderRadius: 6, alignItems: 'center', justifyContent: 'center',
+    marginHorizontal: spacing.xs,
+  },
+  btnText: { color: '#FFFFFF', fontSize: fonts.sizes.lg, lineHeight: 20 },
+});
+
+// ── 메인 컴포넌트 ─────────────────────────────────────────────
+export default function STTTestScreen({ onBack }: Props) {
+  // 튜닝 값 (state: 표시용, ref: 클로저 안에서 최신값 참조)
+  const [rmsThreshold,    setRmsThreshold]    = useState(DEFAULT_RMS_THRESHOLD);
+  const [silenceDuration, setSilenceDuration] = useState(DEFAULT_SILENCE_DURATION);
+  const [minSegment,      setMinSegment]      = useState(DEFAULT_MIN_SEGMENT);
+  const rmsThresholdRef    = useRef(DEFAULT_RMS_THRESHOLD);
+  const silenceDurationRef = useRef(DEFAULT_SILENCE_DURATION);
+  const minSegmentRef      = useRef(DEFAULT_MIN_SEGMENT);
+
+  const updateRms     = (v: number) => { setRmsThreshold(v);    rmsThresholdRef.current    = v; };
+  const updateSilence = (v: number) => { setSilenceDuration(v); silenceDurationRef.current = v; };
+  const updateMin     = (v: number) => { setMinSegment(v);      minSegmentRef.current      = v; };
+
+  const [isStreaming,    setIsStreaming]    = useState(false);
+  const [isVoiceActive,  setIsVoiceActive]  = useState(false);
+  const [rmsLevel,       setRmsLevel]       = useState(0);
+  const [pendingCount,   setPendingCount]   = useState(0);
+  const [results,        setResults]        = useState<STTResult[]>([]);
+  const [error,          setError]          = useState('');
+
+  const activeRef       = useRef(false);
+  const streamRef       = useRef<MediaStream | null>(null);
+  const audioCtxRef     = useRef<AudioContext | null>(null);
+  const analyserRef     = useRef<AnalyserNode | null>(null);
+  const recorderRef     = useRef<MediaRecorder | null>(null);
+  const mimeBaseRef     = useRef('audio/webm');
+  const extRef          = useRef('webm');
+  const mimeTypeRef     = useRef('audio/webm');
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rmsIntervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
+  const segmentStartRef = useRef(0);
+  const hasSoundRef     = useRef(false);
+  const resultIdRef     = useRef(0);
 
   // ── Whisper 전송 ───────────────────────────────────────────
   const processChunk = useCallback(async (blob: Blob) => {
@@ -74,7 +158,7 @@ export default function STTTestScreen({ onBack }: Props) {
   // ── 세그먼트 시작 ─────────────────────────────────────────
   const startSegment = useCallback(() => {
     if (!activeRef.current || !streamRef.current) return;
-    hasSoundRef.current = false;
+    hasSoundRef.current   = false;
     segmentStartRef.current = Date.now();
 
     const recorder = new MediaRecorder(streamRef.current, { mimeType: mimeTypeRef.current });
@@ -82,22 +166,19 @@ export default function STTTestScreen({ onBack }: Props) {
 
     recorder.addEventListener('dataavailable', (e) => {
       const duration = Date.now() - segmentStartRef.current;
-      if (hasSoundRef.current && duration >= MIN_SEGMENT_MS) {
+      if (hasSoundRef.current && duration >= minSegmentRef.current) {
         processChunk(e.data);
       }
-      // 스트리밍 중이면 바로 다음 세그먼트 시작
       if (activeRef.current) startSegment();
     }, { once: true });
 
     recorder.start();
   }, [processChunk]);
 
-  // ── 침묵 감지 시 세그먼트 종료 트리거 ─────────────────────
+  // ── 침묵 감지 시 세그먼트 종료 ────────────────────────────
   const triggerCut = useCallback(() => {
-    const recorder = recorderRef.current;
-    if (recorder && recorder.state === 'recording') {
-      recorder.stop();
-    }
+    const rec = recorderRef.current;
+    if (rec && rec.state === 'recording') rec.stop();
   }, []);
 
   // ── RMS 폴링 ─────────────────────────────────────────────
@@ -112,22 +193,17 @@ export default function STTTestScreen({ onBack }: Props) {
       const rms = Math.sqrt(buf.reduce((s, v) => s + v * v, 0) / buf.length);
       setRmsLevel(rms);
 
-      if (rms > RMS_THRESHOLD) {
-        // 발화 중
+      if (rms > rmsThresholdRef.current) {
         setIsVoiceActive(true);
         hasSoundRef.current = true;
-        if (silenceTimerRef.current) {
-          clearTimeout(silenceTimerRef.current);
-          silenceTimerRef.current = null;
-        }
+        if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
       } else {
-        // 침묵
         setIsVoiceActive(false);
         if (!silenceTimerRef.current) {
           silenceTimerRef.current = setTimeout(() => {
             silenceTimerRef.current = null;
             triggerCut();
-          }, SILENCE_DURATION_MS);
+          }, silenceDurationRef.current);
         }
       }
     }, 50);
@@ -144,14 +220,12 @@ export default function STTTestScreen({ onBack }: Props) {
       const mimeType =
         MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' :
         MediaRecorder.isTypeSupported('audio/webm')             ? 'audio/webm' :
-        MediaRecorder.isTypeSupported('audio/mp4')              ? 'audio/mp4' :
-        'audio/ogg';
+        MediaRecorder.isTypeSupported('audio/mp4')              ? 'audio/mp4' : 'audio/ogg';
       mimeTypeRef.current = mimeType;
       mimeBaseRef.current = mimeType.split(';')[0];
       extRef.current = mimeBaseRef.current.includes('mp4') ? 'mp4'
                      : mimeBaseRef.current.includes('ogg') ? 'ogg' : 'webm';
 
-      // AudioContext 설정
       const audioCtx = new AudioContext();
       audioCtxRef.current = audioCtx;
       const source = audioCtx.createMediaStreamSource(stream);
@@ -176,34 +250,28 @@ export default function STTTestScreen({ onBack }: Props) {
     setIsVoiceActive(false);
     setRmsLevel(0);
 
-    if (rmsIntervalRef.current) { clearInterval(rmsIntervalRef.current); rmsIntervalRef.current = null; }
-    if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
+    if (rmsIntervalRef.current)  { clearInterval(rmsIntervalRef.current);   rmsIntervalRef.current  = null; }
+    if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current);   silenceTimerRef.current = null; }
 
-    const recorder = recorderRef.current;
-    if (recorder && recorder.state === 'recording') recorder.stop();
+    const rec = recorderRef.current;
+    if (rec && rec.state === 'recording') rec.stop();
     recorderRef.current = null;
 
     audioCtxRef.current?.close();
-    audioCtxRef.current = null;
-    analyserRef.current = null;
-
+    audioCtxRef.current  = null;
+    analyserRef.current  = null;
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
   }, []);
 
-  const toggleStreaming = () => {
-    if (activeRef.current) stopStreaming();
-    else startStreaming();
-  };
+  const toggleStreaming = () => activeRef.current ? stopStreaming() : startStreaming();
+  const clearResults    = () => setResults([]);
 
-  const clearResults = () => setResults([]);
-
-  // RMS 레벨 바 너비 (0~100%)
-  const rmsBarWidth = Math.min(100, (rmsLevel / 0.1) * 100);
-  const rmsColor = isVoiceActive ? '#00FF88' : '#4B5563';
-
-  const btnColor = isStreaming ? '#ef4444' : '#2563eb';
-  const btnEmoji = isStreaming ? '⏹️' : '🎙️';
+  const rmsBarPct   = Math.min(100, (rmsLevel / 0.1) * 100);
+  const threshPct   = Math.min(100, (rmsThreshold / 0.1) * 100);
+  const rmsColor    = isVoiceActive ? '#00FF88' : '#4B5563';
+  const btnColor    = isStreaming ? '#ef4444' : '#2563eb';
+  const btnEmoji    = isStreaming ? '⏹️' : '🎙️';
 
   return (
     <View style={styles.container}>
@@ -219,14 +287,30 @@ export default function STTTestScreen({ onBack }: Props) {
 
       <ScrollView contentContainerStyle={styles.content}>
 
-        <View style={styles.descBox}>
-          <Text style={styles.descText}>
-            버튼을 누르면 음성 감지를 시작합니다.{'\n'}
-            <Text style={styles.bold}>말이 끊기면</Text> 자동으로 Whisper에 전송됩니다.
-          </Text>
-          <Text style={styles.descSub}>
-            임계값: RMS {RMS_THRESHOLD} / 침묵 판정: {SILENCE_DURATION_MS}ms
-          </Text>
+        {/* 설정 패널 */}
+        <View style={styles.settingsBox}>
+          <Text style={styles.settingsTitle}>⚙️ 설정</Text>
+          <SettingRow
+            label="RMS 임계값"
+            value={rmsThreshold}
+            display={rmsThreshold.toFixed(3)}
+            min={0.005} max={0.1} step={0.005}
+            onChange={updateRms}
+          />
+          <SettingRow
+            label="침묵 판정"
+            value={silenceDuration}
+            display={`${silenceDuration}ms`}
+            min={200} max={3000} step={100}
+            onChange={updateSilence}
+          />
+          <SettingRow
+            label="최소 세그먼트"
+            value={minSegment}
+            display={`${minSegment}ms`}
+            min={100} max={1000} step={100}
+            onChange={updateMin}
+          />
         </View>
 
         {/* RMS 레벨 바 */}
@@ -236,9 +320,8 @@ export default function STTTestScreen({ onBack }: Props) {
               {isVoiceActive ? '🔊 발화 중' : '🔇 침묵'}
             </Text>
             <View style={styles.rmsBarBg}>
-              <View style={[styles.rmsBarFill, { width: `${rmsBarWidth}%` as any, backgroundColor: rmsColor }]} />
-              {/* threshold 기준선 */}
-              <View style={[styles.rmsThresholdLine, { left: `${(RMS_THRESHOLD / 0.1) * 100}%` as any }]} />
+              <View style={[styles.rmsBarFill, { width: `${rmsBarPct}%` as any, backgroundColor: rmsColor }]} />
+              <View style={[styles.rmsThresholdLine, { left: `${threshPct}%` as any }]} />
             </View>
             <Text style={styles.rmsValue}>RMS: {rmsLevel.toFixed(4)}</Text>
           </View>
@@ -255,22 +338,17 @@ export default function STTTestScreen({ onBack }: Props) {
                 border: isVoiceActive ? '4px solid #00FF88' : 'none',
                 cursor: 'pointer', fontSize: 56, lineHeight: '152px',
                 boxShadow: isVoiceActive
-                  ? '0 0 0 16px rgba(0,255,136,0.2), 0 0 0 32px rgba(0,255,136,0.08)'
-                  : isStreaming
-                  ? '0 0 0 16px rgba(239,68,68,0.2)'
+                  ? '0 0 0 16px rgba(0,255,136,0.2)'
+                  : isStreaming ? '0 0 0 16px rgba(239,68,68,0.2)'
                   : '0 4px 32px rgba(0,0,0,0.4)',
-                transition: 'all 0.1s',
-                userSelect: 'none',
+                transition: 'all 0.1s', userSelect: 'none',
               } as React.CSSProperties}
             >
               {btnEmoji}
             </button>
           ) : (
             <TouchableOpacity
-              style={[styles.micBtn,
-                isStreaming && styles.micBtnActive,
-                isVoiceActive && styles.micBtnVoice,
-              ]}
+              style={[styles.micBtn, isStreaming && styles.micBtnActive, isVoiceActive && styles.micBtnVoice]}
               onPress={toggleStreaming}
               activeOpacity={0.8}
             >
@@ -280,11 +358,9 @@ export default function STTTestScreen({ onBack }: Props) {
 
           <Text style={styles.btnStatus}>
             {isStreaming
-              ? pendingCount > 0
-                ? `⏳ Whisper 처리 중 (${pendingCount}건)...`
-                : isVoiceActive
-                ? '🔊 발화 감지됨'
-                : '🔇 침묵 대기 중'
+              ? pendingCount > 0 ? `⏳ 처리 중 (${pendingCount}건)...`
+              : isVoiceActive    ? '🔊 발화 감지됨'
+              :                    '🔇 침묵 대기 중'
               : '버튼을 눌러 시작'}
           </Text>
         </View>
@@ -339,38 +415,34 @@ const styles = StyleSheet.create({
 
   content: { padding: spacing.xl, alignItems: 'center', paddingBottom: 60 },
 
-  descBox: {
+  settingsBox: {
     width: '100%', backgroundColor: '#1A1F3A', borderRadius: 12,
     padding: spacing.lg, marginBottom: spacing.xl,
     borderWidth: 1, borderColor: '#2D3561',
   },
-  descText: { color: '#D1D5DB', fontSize: fonts.sizes.base, lineHeight: 24, textAlign: 'center' },
-  bold: { color: '#FFFFFF', fontWeight: fonts.weights.bold },
-  descSub: { color: '#4B5563', fontSize: fonts.sizes.xs, textAlign: 'center', marginTop: spacing.sm },
-
-  rmsContainer: {
-    width: '100%', marginBottom: spacing.lg, alignItems: 'center',
+  settingsTitle: {
+    color: '#FFFFFF', fontSize: fonts.sizes.base,
+    fontWeight: fonts.weights.semibold, marginBottom: spacing.md,
   },
+
+  rmsContainer: { width: '100%', marginBottom: spacing.lg, alignItems: 'center' },
   rmsLabel: { fontSize: fonts.sizes.sm, fontWeight: fonts.weights.semibold, marginBottom: spacing.xs },
   rmsBarBg: {
     width: '100%', height: 12, backgroundColor: '#1F2937', borderRadius: 6,
     overflow: 'hidden', position: 'relative',
   },
-  rmsBarFill: { height: '100%', borderRadius: 6, transition: 'width 0.05s' as any },
-  rmsThresholdLine: {
-    position: 'absolute', top: 0, bottom: 0, width: 2, backgroundColor: '#F59E0B',
-  },
+  rmsBarFill: { height: '100%', borderRadius: 6 },
+  rmsThresholdLine: { position: 'absolute', top: 0, bottom: 0, width: 2, backgroundColor: '#F59E0B' },
   rmsValue: { color: '#6B7280', fontSize: fonts.sizes.xs, marginTop: 4 },
 
   btnArea: { alignItems: 'center', marginBottom: spacing.xl },
   micBtn: {
-    width: 160, height: 160, borderRadius: 80,
-    backgroundColor: '#2563EB',
+    width: 160, height: 160, borderRadius: 80, backgroundColor: '#2563EB',
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 12,
   },
-  micBtnActive:  { backgroundColor: '#ef4444' },
-  micBtnVoice:   { backgroundColor: '#059669', borderWidth: 4, borderColor: '#00FF88' },
+  micBtnActive: { backgroundColor: '#ef4444' },
+  micBtnVoice:  { backgroundColor: '#059669', borderWidth: 4, borderColor: '#00FF88' },
   micEmoji: { fontSize: 56 },
   btnStatus: {
     color: '#9CA3AF', fontSize: fonts.sizes.base, marginTop: spacing.lg,
