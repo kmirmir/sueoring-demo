@@ -241,7 +241,7 @@ export default function SignLanguageDemoScreen({ onBack }: SignLanguageDemoScree
 
       // 안정화 필터
       stabilityBufRef.current.push(gesture);
-      if (stabilityBufRef.current.length > 10) stabilityBufRef.current.shift();
+      if (stabilityBufRef.current.length > STABILITY_FRAMES) stabilityBufRef.current.shift();
       const recent = stabilityBufRef.current.slice(-STABILITY_FRAMES);
       if (recent.length === STABILITY_FRAMES && recent.every(g => g === gesture)) {
         finalizeGesture(gesture);
