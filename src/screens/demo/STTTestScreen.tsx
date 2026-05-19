@@ -9,18 +9,18 @@ import {
   ScrollView, Platform,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { fonts, spacing } from '@/constants';
+import { fonts, spacing, STT_VAD } from '@/constants';
 
 const SIGNAL_SERVER =
   typeof window !== 'undefined' && window.location.hostname !== 'localhost'
     ? 'https://sueoring-server.onrender.com'
     : 'http://localhost:3001';
 
-// 기본값
-const DEFAULT_RMS_THRESHOLD    = 0.015;
-const DEFAULT_SILENCE_DURATION = 600;
-const DEFAULT_MIN_SEGMENT      = 300;
-const DEFAULT_MIN_VOICE        = 200;  // RMS가 이 시간 이상 연속으로 threshold 초과해야 발화로 인정
+// 기본값 — src/constants/stt.ts 공통값 사용
+const DEFAULT_RMS_THRESHOLD    = STT_VAD.RMS_THRESHOLD;
+const DEFAULT_SILENCE_DURATION = STT_VAD.SILENCE_MS;
+const DEFAULT_MIN_SEGMENT      = STT_VAD.MIN_SEGMENT_MS;
+const DEFAULT_MIN_VOICE        = STT_VAD.MIN_VOICE_MS;
 
 interface STTResult {
   id: number;
