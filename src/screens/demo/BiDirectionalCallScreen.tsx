@@ -34,6 +34,12 @@ const SIGNAL_SERVER =
     ? 'https://sueoring-server.onrender.com'  // 상용 서버 URL로 교체 필요
     : 'http://localhost:3001';
 
+// STT VAD 파라미터
+const STT_RMS_THRESHOLD = 0.015;  // 이 값 이하 → 침묵
+const STT_SILENCE_MS    = 600;    // 침묵 지속 시간 → 세그먼트 종료
+const STT_MIN_SEGMENT_MS = 300;   // 최소 세그먼트 길이
+const STT_MIN_VOICE_MS  = 200;    // RMS가 이 시간 이상 연속 초과해야 발화 인정
+
 // STUN: 공개 IP 획득 / TURN: AP Isolation·NAT 헤어핀 실패 시 릴레이
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
@@ -127,6 +133,9 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const currentAudioRef        = useRef<HTMLAudioElement | null>(null); // OpenAI TTS
   const sttActiveRef           = useRef(false);
   const recognitionRef         = useRef<any>(null);
+  const sttAudioCtxRef         = useRef<AudioContext | null>(null);
+  const sttRmsIntervalRef      = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sttSilenceTimerRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 인앱 디버그: setDebugLog는 stable reference이므로 어느 클로저에서도 안전하게 호출 가능
   const addLog = useRef((msg: string) => {
     const t = new Date().toLocaleTimeString('ko-KR', { hour12: false });
@@ -142,6 +151,9 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
   const cleanup = useCallback(() => {
     animFrameRef.current && cancelAnimationFrame(animFrameRef.current);
     sttActiveRef.current = false;
+    if (sttRmsIntervalRef.current)  { clearInterval(sttRmsIntervalRef.current);  sttRmsIntervalRef.current  = null; }
+    if (sttSilenceTimerRef.current) { clearTimeout(sttSilenceTimerRef.current);  sttSilenceTimerRef.current = null; }
+    sttAudioCtxRef.current?.close(); sttAudioCtxRef.current = null;
     try { recognitionRef.current?.abort(); } catch { /* 무시 */ }
     recognitionRef.current = null;
     try { mediaRecorderRef.current?.stop(); } catch { /* 무시 */ }
@@ -390,6 +402,9 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       setCurrentSub('상대방이 통화를 종료했습니다.');
       // 청인 STT 중단
       sttActiveRef.current = false;
+      if (sttRmsIntervalRef.current)  { clearInterval(sttRmsIntervalRef.current);  sttRmsIntervalRef.current  = null; }
+      if (sttSilenceTimerRef.current) { clearTimeout(sttSilenceTimerRef.current);  sttSilenceTimerRef.current = null; }
+      sttAudioCtxRef.current?.close(); sttAudioCtxRef.current = null;
       try { mediaRecorderRef.current?.stop(); mediaRecorderRef.current = null; } catch { /* 무시 */ }
     });
 
@@ -587,6 +602,9 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
 
     // ① Whisper STT 중단 (TTS 에코 차단)
     sttActiveRef.current = false;
+    if (sttRmsIntervalRef.current)  { clearInterval(sttRmsIntervalRef.current);  sttRmsIntervalRef.current  = null; }
+    if (sttSilenceTimerRef.current) { clearTimeout(sttSilenceTimerRef.current);  sttSilenceTimerRef.current = null; }
+    sttAudioCtxRef.current?.close(); sttAudioCtxRef.current = null;
     try { mediaRecorderRef.current?.stop(); mediaRecorderRef.current = null; } catch { /* 무시 */ }
     // ② 로컬 마이크 뮤트
     localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = false; });
@@ -651,91 +669,114 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
     '음악',
   ];
 
-  // ── OpenAI Whisper STT (청인 전용) — MediaRecorder 1.5초 청크 방식 ──
+  // ── OpenAI Whisper STT (청인 전용) — VAD 기반 자동 세그먼트 분리 ──
   const initSTT = () => {
     if (!localStreamRef.current) return;
     const audioTracks = localStreamRef.current.getAudioTracks();
     if (!audioTracks.length) return;
 
+    // 기존 STT 리소스 정리
+    if (sttRmsIntervalRef.current)  { clearInterval(sttRmsIntervalRef.current);  sttRmsIntervalRef.current  = null; }
+    if (sttSilenceTimerRef.current) { clearTimeout(sttSilenceTimerRef.current);  sttSilenceTimerRef.current = null; }
+    sttAudioCtxRef.current?.close(); sttAudioCtxRef.current = null;
+
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
                    : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm'
                    : MediaRecorder.isTypeSupported('audio/mp4')  ? 'audio/mp4'
                    : 'audio/ogg';
-    const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
+    const mimeBase = mimeType.split(';')[0];
+    const ext = mimeBase.includes('mp4') ? 'mp4' : mimeBase.includes('ogg') ? 'ogg' : 'webm';
     const audioStream = new MediaStream(audioTracks);
-    addLog(`🎙️ STT 시작 | mime:${mimeType.split(';')[0].split('/')[1]}`);
+    addLog(`🎙️ STT(VAD) 시작 | mime:${mimeBase.split('/')[1]}`);
 
     sttActiveRef.current = true;
     setSttReady(true);
 
-    let segCount = 0;
+    // AudioContext로 RMS 분석
+    const audioCtx = new AudioContext();
+    sttAudioCtxRef.current = audioCtx;
+    const source = audioCtx.createMediaStreamSource(audioStream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+    const rmsBuf = new Float32Array(analyser.fftSize);
 
-    // stop() → ondataavailable → 완전한 WEBM 파일 → Whisper 전송 → start() 반복
+    // 세그먼트별 클로저 상태 (startSegment 호출마다 초기화)
+    let voiceStart: number | null = null;
+    let hasSoundInSegment = false;
+    let segmentStart = 0;
+
+    const triggerCut = () => {
+      const rec = mediaRecorderRef.current;
+      if (rec && rec.state === 'recording') rec.stop();
+    };
+
     const startSegment = () => {
       if (!sttActiveRef.current) return;
+      hasSoundInSegment = false;
+      voiceStart = null;
+      segmentStart = Date.now();
 
       const recorder = new MediaRecorder(audioStream, { mimeType });
       mediaRecorderRef.current = recorder;
 
-      recorder.ondataavailable = async (e) => {
-        segCount++;
-        addLog(`📦 세그먼트#${segCount} size:${e.data.size}B`);
+      recorder.addEventListener('dataavailable', async (e) => {
+        const duration = Date.now() - segmentStart;
+        const shouldSend = hasSoundInSegment
+          && duration >= STT_MIN_SEGMENT_MS
+          && !ttsPlayingRef.current
+          && e.data.size >= 1000;
 
-        if (!sttActiveRef.current || ttsPlayingRef.current) return;
-        if (e.data.size < 1000) { addLog(`⏭ 스킵(size<1000: ${e.data.size}B)`); return; }
+        if (shouldSend) {
+          try {
+            setSttLive('인식 중...');
+            addLog(`🌐 Whisper | size:${e.data.size}B dur:${duration}ms`);
+            const formData = new FormData();
+            formData.append('audio', new Blob([e.data], { type: mimeBase }), `audio.${ext}`);
+            const response = await fetch(`${SIGNAL_SERVER}/api/stt`, { method: 'POST', body: formData });
+            const data = await response.json();
+            const text = data.text?.trim();
+            setSttLive('');
 
-        try {
-          setSttLive('인식 중...');
-          addLog('🌐 Whisper 요청 전송...');
-          const formData = new FormData();
-          formData.append('audio', e.data, `audio.${ext}`);
-          const response = await fetch(`${SIGNAL_SERVER}/api/stt`, { method: 'POST', body: formData });
-          const data = await response.json();
-          const text = data.text?.trim();
-          setSttLive('');
-
-          if (!response.ok) {
-            addLog(`❌ STT HTTP${response.status}: ${data.error ?? 'error'}`);
-            return;
+            if (!response.ok) {
+              addLog(`❌ STT HTTP${response.status}: ${data.error ?? 'error'}`);
+            } else if (!text) {
+              addLog('⚪ 빈 결과');
+            } else if (STT_HALLUCINATIONS.some(h => text.includes(h))) {
+              addLog(`🚫 환각차단: "${text.substring(0, 15)}"`);
+            } else {
+              const normalize = (s: string) => s.replace(/\s+/g, '');
+              const normText = normalize(text);
+              const isEcho = recentTTSTextsRef.current.some(t => {
+                const normTts = normalize(t);
+                return normTts === normText || normTts.includes(normText);
+              });
+              if (isEcho) {
+                addLog(`🔇 에코차단: "${text.substring(0, 15)}"`);
+              } else {
+                addLog(`📝 인식성공: "${text.substring(0, 20)}"`);
+                setSttLive(text);
+                setTimeout(() => setSttLive(prev => prev === text ? '' : prev), 5000);
+                setMessages(prev => [...prev, { text, from: 'me', ts: Date.now() }]);
+                if (dcRef.current?.readyState === 'open') {
+                  dcRef.current.send(JSON.stringify({ type: 'speech', text }));
+                  addLog('📡 DataChannel 전송');
+                } else if (socketRef.current?.connected) {
+                  socketRef.current.emit('room-text', { roomCode: currentRoomRef.current, type: 'speech', text });
+                  addLog('📡 Socket 전송');
+                } else {
+                  addLog('❌ 전송채널 없음');
+                }
+              }
+            }
+          } catch (err) {
+            addLog(`❌ STT오류: ${err}`);
+            setSttLive('');
           }
-          if (!text) { addLog('⚪ 빈 결과 (무음)'); return; }
-
-          if (STT_HALLUCINATIONS.some(h => text.includes(h))) {
-            addLog(`🚫 환각차단: "${text.substring(0, 15)}"`);
-            return;
-          }
-
-          const normalize = (s: string) => s.replace(/\s+/g, '');
-          const normText = normalize(text);
-          const isEcho = recentTTSTextsRef.current.some(t => {
-            const normTts = normalize(t);
-            return normTts === normText || normTts.includes(normText);
-          });
-          if (isEcho) { addLog(`🔇 에코차단: "${text.substring(0, 15)}"`); return; }
-
-          addLog(`📝 인식성공: "${text.substring(0, 20)}"`);
-          setSttLive(text);
-          setTimeout(() => setSttLive(prev => prev === text ? '' : prev), 5000);
-          setMessages(prev => [...prev, { text, from: 'me', ts: Date.now() }]);
-          if (dcRef.current?.readyState === 'open') {
-            dcRef.current.send(JSON.stringify({ type: 'speech', text }));
-            addLog('📡 DataChannel 전송');
-          } else if (socketRef.current?.connected) {
-            socketRef.current.emit('room-text', { roomCode: currentRoomRef.current, type: 'speech', text });
-            addLog('📡 Socket 전송');
-          } else {
-            addLog('❌ 전송채널 없음');
-          }
-        } catch (err) {
-          addLog(`❌ STT오류: ${err}`);
-          setSttLive('');
         }
-      };
 
-      // stop() 호출 시 ondataavailable이 헤더 포함 완전한 파일로 fire → 다음 세그먼트 시작
-      recorder.addEventListener('stop', () => {
         if (sttActiveRef.current && !ttsPlayingRef.current) {
-          setTimeout(startSegment, 50);
+          startSegment();
         } else {
           setSttReady(false);
           addLog('⏹ STT 중단');
@@ -743,13 +784,28 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
       }, { once: true });
 
       recorder.start();
-      addLog('▶ recorder.start()');
-
-      // 3초 후 stop → ondataavailable(완전한 파일) → 다음 세그먼트
-      setTimeout(() => {
-        if (recorder.state === 'recording') recorder.stop();
-      }, 3000);
     };
+
+    // RMS 폴링 — 50ms 간격
+    sttRmsIntervalRef.current = setInterval(() => {
+      if (!sttActiveRef.current) return;
+      analyser.getFloatTimeDomainData(rmsBuf);
+      const rms = Math.sqrt(rmsBuf.reduce((s, v) => s + v * v, 0) / rmsBuf.length);
+
+      if (rms > STT_RMS_THRESHOLD) {
+        if (voiceStart === null) voiceStart = Date.now();
+        if (Date.now() - voiceStart >= STT_MIN_VOICE_MS) hasSoundInSegment = true;
+        if (sttSilenceTimerRef.current) { clearTimeout(sttSilenceTimerRef.current); sttSilenceTimerRef.current = null; }
+      } else {
+        voiceStart = null;
+        if (!sttSilenceTimerRef.current) {
+          sttSilenceTimerRef.current = setTimeout(() => {
+            sttSilenceTimerRef.current = null;
+            triggerCut();
+          }, STT_SILENCE_MS);
+        }
+      }
+    }, 50);
 
     startSegment();
   };
@@ -1224,6 +1280,9 @@ export default function BiDirectionalCallScreen({ onBack }: Props) {
                     style={{ backgroundColor: '#1D4ED8', paddingVertical: 4, paddingHorizontal: 10, borderRadius: 6 }}
                     onPress={() => {
                       sttActiveRef.current = false;
+                      if (sttRmsIntervalRef.current)  { clearInterval(sttRmsIntervalRef.current);  sttRmsIntervalRef.current  = null; }
+                      if (sttSilenceTimerRef.current) { clearTimeout(sttSilenceTimerRef.current);  sttSilenceTimerRef.current = null; }
+                      sttAudioCtxRef.current?.close(); sttAudioCtxRef.current = null;
                       try { mediaRecorderRef.current?.stop(); mediaRecorderRef.current = null; } catch { /* 무시 */ }
                       setTimeout(() => initSTT(), 100);
                     }}
